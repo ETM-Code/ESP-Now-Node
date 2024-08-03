@@ -49,9 +49,9 @@ uint32_t setupMessageSecond32Bits;
 
 typedef struct {
     uint8_t address [6];
-} macAddress;
+} MacAddress;
 
-macAddress macAddresses[15] = {0};
+MacAddress macAddresses[15] = {0};
 uint8_t numSavedAddresses = 0;
 uint8_t macArrayNumber = 0;
 
@@ -62,14 +62,14 @@ uint8_t batchTagsBookmark[MESSAGE_TAGS_TO_STORE] = {0};
 uint8_t batchData[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS][USABLE_TRANSMISSION_SPACE] = {0};
 uint8_t batchDataBookmark = 0;
 uint8_t currentPersonalBatchTag = 0;
-macAddress myMacAddress;
+MacAddress myMacAddress;
 
 unsigned long lastDataSend = 0;
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 //Defining Message Types
 typedef struct {
-    macAddress macAddress;
+    MacAddress macAddress;
     uint32_t messageTag;
     uint8_t batchTag;
     uint8_t data[USABLE_TRANSMISSION_SPACE];
@@ -95,7 +95,7 @@ bool isDuplicateBatch(uint32_t messageTag, uint8_t batchTag, int messageTagNum);
 bool isDuplicateAddress(const uint8_t* mac_addr);
 void printMacAddress(const uint8_t* mac_addr);
 
-void stringToMacAddress(String macStr, macAddress* mac) {
+void stringToMacAddress(String macStr, MacAddress* mac) {
     for (int i = 0; i < 6; ++i) {
         mac->address[i] = strtol(macStr.substring(i * 3, i * 3 + 2).c_str(), NULL, 16);
     }
