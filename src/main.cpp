@@ -85,10 +85,12 @@ unsigned long lastScanBroadcastTime = 0;
 void startScanMode();
 void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len);
 void sendRandomData();
+bool addPeer(const uint8_t *);
 void generateRandomData(uint8_t* data, size_t length);
 void sendMessageToPeers(const uint8_t *message, size_t len);
 bool isDuplicateMessage(uint32_t messageTag, uint8_t batchTag);
 bool isDuplicateBatch(uint32_t messageTag, uint8_t batchTag, int messageTagNum);
+bool isDuplicateAddress(const uint8_t* mac_addr);
 void printMacAddress(const uint8_t* mac_addr);
 
 bool sendESPNowMessage(const uint8_t *peer_addr, const uint8_t *data, size_t len) {
