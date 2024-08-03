@@ -11,7 +11,7 @@
 
 #define DATA_SIZE 6000
 #define TRANSMISSION_SIZE 250 //Maximum bytes transmissable by ESP_Now in a single batch
-#define USABLE_TRANSMISSION_SPACE 245 //Allocate 4 bytes for message identifier, 1 for batch identifier
+#define USABLE_TRANSMISSION_SPACE 239 //Allocate 4 bytes for message identifier, 1 for batch identifier, 6 for mac address
 
 int divideAndRoundUp(int numerator, int denominator) {
     if (denominator == 0) {
@@ -62,12 +62,14 @@ uint8_t batchTagsBookmark[MESSAGE_TAGS_TO_STORE] = {0};
 uint8_t batchData[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS][USABLE_TRANSMISSION_SPACE] = {0};
 uint8_t batchDataBookmark = 0;
 uint8_t currentPersonalBatchTag = 0;
+macAddress myMacAddress;
 
 unsigned long lastDataSend = 0;
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 //Defining Message Types
 typedef struct {
+    macAddress macAddress;
     uint32_t messageTag;
     uint8_t batchTag;
     uint8_t data[USABLE_TRANSMISSION_SPACE];
@@ -92,6 +94,12 @@ bool isDuplicateMessage(uint32_t messageTag, uint8_t batchTag);
 bool isDuplicateBatch(uint32_t messageTag, uint8_t batchTag, int messageTagNum);
 bool isDuplicateAddress(const uint8_t* mac_addr);
 void printMacAddress(const uint8_t* mac_addr);
+
+void stringToMacAddress(String macStr, macAddress* mac) {
+    for (int i = 0; i < 6; ++i) {
+        mac->address[i] = strtol(macStr.substring(i * 3, i * 3 + 2).c_str(), NULL, 16);
+    }
+}
 
 bool sendESPNowMessage(const uint8_t *peer_addr, const uint8_t *data, size_t len) {
     esp_err_t result = esp_now_send(peer_addr, data, len);
@@ -138,6 +146,8 @@ void setup() {
     }
 
     Serial.println("ESP-NOW Initialized and Broadcast Peer Added");
+    
+    stringToMacAddress(WiFi.macAddress(), &myMacAddress);
 }
 
 void loop() {
@@ -278,6 +288,7 @@ void sendRandomData() {
     Serial.print("Sending random data to AP and peers: ");
     for (int i = 0; i < numberOfTransmissions; i++) {
         opTransmission message;
+        message.macAddress = myMacAddress;
         message.messageTag = messageIdentifier;
         message.batchTag = i;
         if (i >= (numberOfTransmissions - 1)) {
