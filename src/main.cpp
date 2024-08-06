@@ -42,47 +42,49 @@ bool setupReceived = false;
 bool scanMode = false;
 unsigned long scanEndTime = 0;
 
-uint8_t AP_Address[6];
+alignas(4) uint8_t AP_Address[6];
 
 uint32_t setupMessageFirst32Bits;
 uint32_t setupMessageSecond32Bits;
 
 typedef struct {
-    uint8_t address [6];
+    alignas(4) uint8_t address[6];
 } MacAddress;
 
-MacAddress macAddresses[15] = {0};
-uint8_t numSavedAddresses = 0;
-uint8_t macArrayNumber = 0;
+alignas(4) MacAddress macAddresses[15] = {0};
+alignas(4) uint8_t numSavedAddresses = 0;
+alignas(4) uint8_t macArrayNumber = 0;
 
-uint32_t messageTags[MESSAGE_TAGS_TO_STORE] = {0}; //Permits the identification of 45 different full transmissions -> MAKE SURE TO ALLOCATE [0] TO THIS ESP
-uint8_t messageTagBookmark = 0;
-uint8_t batchTags[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS] = {0}; //Identifies the part of a message that the batch contains, 24 batches per transmission
-uint8_t batchTagsBookmark[MESSAGE_TAGS_TO_STORE] = {0};
-uint8_t batchData[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS][USABLE_TRANSMISSION_SPACE] = {0};
-uint8_t batchDataBookmark = 0;
-uint8_t currentPersonalBatchTag = 0;
-MacAddress myMacAddress;
+alignas(4) uint32_t messageTags[MESSAGE_TAGS_TO_STORE] = {0};
+alignas(4) uint8_t messageTagBookmark = 0;
+alignas(4) uint8_t batchTags[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS] = {0};
+alignas(4) uint8_t batchTagsBookmark[MESSAGE_TAGS_TO_STORE] = {0};
+alignas(4) uint8_t batchData[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS][USABLE_TRANSMISSION_SPACE] = {0};
+alignas(4) uint8_t batchDataBookmark = 0;
+alignas(4) uint8_t currentPersonalBatchTag = 0;
+alignas(4) MacAddress myMacAddress;
 
 unsigned long lastDataSend = 0;
-uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+alignas(4) uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 //Defining Message Types
 typedef struct {
-    MacAddress macAddress;
+    alignas(4) MacAddress macAddress;
     uint32_t messageTag;
     uint8_t batchTag;
-    uint8_t data[USABLE_TRANSMISSION_SPACE];
+    alignas(4) uint8_t data[USABLE_TRANSMISSION_SPACE];
 } opTransmission;
 const size_t opTransmissionSize = sizeof(opTransmission);
 
 typedef struct {
     uint32_t code;
-    uint8_t routerAddress[6];
+    alignas(4) uint8_t routerAddress[6];
 } scanTransmission;
 const size_t scanTransmissionSize = sizeof(scanTransmission);
 
 unsigned long lastScanBroadcastTime = 0;
+
+alignas(4) uint8_t data[DATA_SIZE] = {0}; //declared for send-random-data function to overcome stack allocation issues
 
 void startScanMode();
 void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len);
@@ -102,7 +104,15 @@ void stringToMacAddress(String macStr, MacAddress* mac) {
 }
 
 bool sendESPNowMessage(const uint8_t *peer_addr, const uint8_t *data, size_t len) {
+
+    // Ensure peer_addr and data are properly aligned
+    if ((uintptr_t)peer_addr % 4 != 0 || (uintptr_t)data % 4 != 0) {
+        Serial.println("Unaligned access detected");
+        return false;
+    }
+
     esp_err_t result = esp_now_send(peer_addr, data, len);
+    // esp_err_t result = esp_now_send(broadcastAddress, data, len);
     if (result == ESP_OK) {
         Serial.println("Message sent successfully");
         return true;
@@ -112,6 +122,31 @@ bool sendESPNowMessage(const uint8_t *peer_addr, const uint8_t *data, size_t len
         return false;
     }
 }
+
+void printPeerInfo() {
+    esp_now_peer_num_t peerCount;
+    if (esp_now_get_peer_num(&peerCount) == ESP_OK) {
+        Serial.printf("Number of ESP-NOW peers: %d\n", peerCount.total_num);
+        if (peerCount.total_num > 0) {
+            esp_now_peer_info_t peerInfo;
+            for (int i = 0; i < peerCount.total_num; ++i) {
+                if (esp_now_fetch_peer(true, &peerInfo) == ESP_OK) {
+                    Serial.printf("Peer %d: MAC: ", i + 1);
+                    for (int j = 0; j < 6; j++) {
+                        Serial.printf("%02X", peerInfo.peer_addr[j]);
+                        if (j < 5) Serial.print(":");
+                    }
+                    Serial.printf(", Channel: %d, Encrypt: %d\n", peerInfo.channel, peerInfo.encrypt);
+                } else {
+                    Serial.printf("Failed to fetch details for peer %d\n", i + 1);
+                }
+            }
+        }
+    } else {
+        Serial.println("Failed to get the number of ESP-NOW peers.");
+    }
+}
+
 
 void removeAllPeers() {
     esp_now_deinit(); // Deinitialize ESP-NOW
@@ -124,6 +159,7 @@ void setup() {
     Serial.begin(115200);
     delay(5000);
     WiFi.mode(WIFI_AP_STA);
+    
     
     // Initialize ESP-NOW
     if (esp_now_init() != ESP_OK) {
@@ -160,6 +196,7 @@ void loop() {
 
     if (!scanMode && setupReceived) { //Switch to generate random data and add to buffer
         if (currentMillis - lastDataSend >= NODE_TRANSMISSION_INTERVAL_MIN + (esp_random() % (NODE_TRANSMISSION_INTERVAL_MAX - NODE_TRANSMISSION_INTERVAL_MIN))) {
+            Serial.println("I guess we're sending data");
             sendRandomData();
             lastDataSend = currentMillis;
         }
@@ -178,6 +215,9 @@ void loop() {
             lastScanBroadcastTime = currentMillis;
         }
     }
+
+    printPeerInfo();
+    
 }
 
 void startScanMode() {
@@ -190,14 +230,20 @@ void startScanMode() {
 }
 
 void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
+    // Ensure mac_addr and data are properly aligned
+    // if ((uintptr_t)mac_addr % 4 != 0 || (uintptr_t)data % 4 != 0) {
+    //     Serial.println("Unaligned access detected");
+    //     return;
+    // }
+
     Serial.print("Data received from ");
     printMacAddress(mac_addr);
-    Serial.print(", length: ");
+    Serial.print("length: ");
     Serial.println(len);
     uint64_t setupMessage;
     memcpy(&setupMessage, data, sizeof(uint64_t));
 
-    if (len == sizeof(uint64_t) && setupMessage == SETUP_COMMAND) { //Check for setup message
+    if (len == sizeof(uint64_t) && setupMessage == SETUP_COMMAND && !scanMode) { //Check for setup message
         Serial.println("AP Setup Message Received");
         setupMessageFirst32Bits = (uint32_t)(setupMessage >> 32);
         setupMessageSecond32Bits = (uint32_t)(setupMessage & 0xFFFFFFFF);
@@ -211,8 +257,18 @@ void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
 
         if(addPeer(mac_addr)){
             Serial.println("Added AP Address");
+            // Serial.println("Why is this not printing???");
+
+            // Send setup message back to AP
+            if (sendESPNowMessage(mac_addr, (const uint8_t*)&setupMessage, sizeof(setupMessage))) {
+                Serial.println("Setup message sent back to AP");
+            } else {
+                Serial.println("Failed to send setup message back to AP");
+            }
         }
-        else{Serial.println("Failed to add AP Address");}
+        else {
+            Serial.println("Failed to add AP Address");
+        }
     } else if (scanMode && len == scanTransmissionSize) { //check for scan message
         uint32_t receivedCode;
         uint8_t receivedAP_Address[6];
@@ -278,14 +334,14 @@ void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
             Serial.println("Duplicate message, discarding.");
         }
     }
+    delay(50);
 }
 
 void sendRandomData() {
-    uint8_t data[DATA_SIZE];
     generateRandomData(data, DATA_SIZE);
     uint32_t messageIdentifier = esp_random();
 
-    Serial.print("Sending random data to AP and peers: ");
+    Serial.println("Sending random data to AP and peers");
     for (int i = 0; i < numberOfTransmissions; i++) {
         opTransmission message;
         message.macAddress = myMacAddress;
@@ -302,6 +358,7 @@ void sendRandomData() {
         }
         sendESPNowMessage(AP_Address, (const uint8_t *)&message, opTransmissionSize);
         sendMessageToPeers((const uint8_t *)&message, opTransmissionSize);
+        delay(50);
     }
 }
 
@@ -317,11 +374,28 @@ void generateRandomData(uint8_t* data, size_t length) {
 }
 
 void sendMessageToPeers(const uint8_t *message, size_t len) {
+    esp_now_peer_num_t peerCount;
+    if (esp_now_get_peer_num(&peerCount) != ESP_OK) {
+        Serial.println("Failed to get the number of ESP-NOW peers.");
+        return;
+    }
+
+    if (peerCount.total_num == 0) {
+        Serial.println("No peers to send messages to.");
+        return;
+    }
+
     Serial.println("Sending message to peers:");
-    for (int i = 0; i < numSavedAddresses; i++) {
-        Serial.print("Sending to peer: ");
-        printMacAddress((const uint8_t *)&macAddresses[i]);
-        sendESPNowMessage((const uint8_t *)&macAddresses[i], message, len);
+    esp_now_peer_info_t peerInfo;
+    for (int i = 0; i < peerCount.total_num; ++i) {
+        if (esp_now_fetch_peer(true, &peerInfo) == ESP_OK) {
+            Serial.print("Sending to peer: ");
+            printMacAddress(peerInfo.peer_addr);
+            sendESPNowMessage(peerInfo.peer_addr, message, len);
+        } else {
+            Serial.printf("Failed to fetch details for peer %d\n", i + 1);
+        }
+        delay(50); // Add a small delay between sending messages to different peers
     }
 }
 
