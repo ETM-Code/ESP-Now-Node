@@ -55,6 +55,8 @@ alignas(4) MacAddress macAddresses[15] = {0};
 alignas(4) uint8_t numSavedAddresses = 0;
 alignas(4) uint8_t macArrayNumber = 0;
 
+alignas(4) uint8_t messageAddresses[15][NO_OF_BATCH_TAGS][6];
+alignas(4) uint8_t messageData[15][NO_OF_BATCH_TAGS][250];
 alignas(4) uint32_t messageTags[MESSAGE_TAGS_TO_STORE] = {0};
 alignas(4) uint8_t messageTagBookmark = 0;
 alignas(4) uint8_t batchTags[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS] = {0};
@@ -170,29 +172,19 @@ void setup() {
 }
 
 void addInitialPeers() {
-    esp_now_peer_info_t peerInfo = {};
+    // // esp_now_peer_info_t peerInfo = {};
 
-    // Add the broadcast peer
-    memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-    peerInfo.channel = WIFI_CHANNEL;
-    peerInfo.encrypt = false;
+    // // Add the broadcast peer
+    // memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+    // peerInfo.channel = WIFI_CHANNEL;
+    // peerInfo.encrypt = false;
 
-    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-        Serial.println("Failed to add broadcast peer");
-        return;
-    }
-
-    Serial.println("Broadcast peer added");
-
-    // Add AP as a peer if setupReceived is true
-    // if (setupReceived) {
-    //     memcpy(peerInfo.peer_addr, AP_Address, 6);
-    //     if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    //         Serial.println("Failed to add AP peer");
-    //     } else {
-    //         Serial.println("AP peer added");
-    //     }
+    // if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    //     Serial.println("Failed to add broadcast peer");
+    //     return;
     // }
+
+    // Serial.println("Broadcast peer added");
 }
 
 
@@ -207,8 +199,8 @@ void loop() {
     }
 
     if (!scanMode && setupReceived) { //Switch to generate random data and add to buffer
+        esp_now_del_peer(broadcastAddress);
         if (currentMillis - lastDataSend >= NODE_TRANSMISSION_INTERVAL_MIN + (esp_random() % (NODE_TRANSMISSION_INTERVAL_MAX - NODE_TRANSMISSION_INTERVAL_MIN))) {
-            // Serial.println("I guess we're sending data");
             sendRandomData();
             lastDataSend = currentMillis;
         }
@@ -217,17 +209,26 @@ void loop() {
     // If in scan mode, broadcast scan messages periodically
     if (scanMode) {
         if (currentMillis - lastScanBroadcastTime > 1000) {
+            esp_now_peer_info_t peerInfo = {};
+
+            // Add the broadcast peer
+            memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+            peerInfo.channel = WIFI_CHANNEL;
+            peerInfo.encrypt = false;
+
+            if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+                Serial.println("Failed to add broadcast peer");
+                return;
+            }
+
             scanTransmission scanMessage;
             scanMessage.code = setupMessageFirst32Bits;
             memcpy(scanMessage.routerAddress, AP_Address, 6);
 
             Serial.println("Broadcasting scan message");
-            // Serial.print("Sending Scan Message Size: ");
-            // Serial.println(sizeof(scanMessage));
-            // sendESPNowMessage(broadcastAddress, (const uint8_t *)&scanMessage, scanTransmissionSize);
+
             esp_err_t result = esp_now_send(broadcastAddress, (const uint8_t *)&scanMessage, sizeof(scanMessage));
             if (result == ESP_OK) {
-                // Serial.println("Message sent successfully");
             } else {
                 Serial.print("Error sending message: ");
                 Serial.println(result);
@@ -242,37 +243,12 @@ void startScanMode() {
     scanEndTime = millis() + SCAN_DURATION;
     Serial.println("Starting scan mode...");
     scanMode = true;
-    // WiFi.disconnect();
-    // WiFi.mode(WIFI_AP_STA);
-    // WiFi.channel(1);  // You might need to scan multiple channels
-    // // Deinitialize ESP-NOW
-    // esp_now_deinit();
-
-    // // Reinitialize ESP-NOW
-    // if (esp_now_init() != ESP_OK) {
-    //     Serial.println("Error reinitializing ESP-NOW");
-    //     return;
-    // }
-
-    // // Re-register the callback
-    // esp_now_register_recv_cb(onDataRecv);
-
-    // // Re-add peers if necessary
-    // addInitialPeers();
-
-    // Serial.println("ESP-NOW reinitialized in scan mode");
 }
 
 void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
-    // Serial.print("Data received from ");
-    // printMacAddress(mac_addr);
-    // Serial.print("length: ");
-    // Serial.println(len);
+
     uint64_t setupMessage;
     memcpy(&setupMessage, data, sizeof(uint64_t));
-
-    // Serial.print("Local Scan Message Size:  ");
-    // Serial.println(scanTransmissionSize);
 
     if (len == sizeof(uint64_t) && setupMessage == SETUP_COMMAND && !scanMode) { //Check for setup message
         Serial.println("AP Setup Message Received");
@@ -300,14 +276,12 @@ void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
             Serial.println("Failed to add AP Address");
         }
     } else if (scanMode && len == scanTransmissionSize) { //check for scan message
-        // Serial.println("Received Scan Message");
         uint32_t receivedCode;
         uint8_t receivedAP_Address[6];
         memcpy(&receivedCode, data, 4);
         memcpy(receivedAP_Address, data + 4, 6);
 
         if (receivedCode == setupMessageFirst32Bits && memcmp(receivedAP_Address, AP_Address, 6) == 0) { //check if 1st part of handshake
-            // Serial.println("Initial pairing message received and verified");
 
             scanTransmission responseMessage;
             responseMessage.code = setupMessageSecond32Bits;
@@ -339,7 +313,6 @@ void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
                 }
             }
         } else if (receivedCode == setupMessageSecond32Bits && memcmp(receivedAP_Address, AP_Address, 6) == 0) { //check if 2nd part of handshake
-            // Serial.println("Second pairing message received and verified");
 
             if (!isDuplicateAddress(mac_addr)) { //check if duplicate -> turn this into a function, since it's repeated
                 if (numSavedAddresses < 15) {
@@ -357,17 +330,21 @@ void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
                 }
             }
         }
-    } else if (len>=4){
-        uint32_t receivedCode;
-        memcpy(&receivedCode, data, 4);
-        Serial.print("Received code: ");
-        Serial.println(receivedCode);
-    }
+    } 
+    // else if (len>=4){
+    //     uint32_t receivedCode;
+    //     memcpy(&receivedCode, data, 4);
+    //     Serial.print("Received code: ");
+    //     Serial.println(receivedCode);
+    // }
     else if (len > 5 && len < 251) { //check if data transmission
+        MacAddress incomingAddress;
+        for(int i = 0; i<6; i++){
+        memcpy(&incomingAddress.address[i], data+i, 1);}
         uint32_t receivedTag;
-        memcpy(&receivedTag, data, 4);
+        memcpy(&receivedTag, data + 6, 4);
         uint8_t receivedBatchTag;
-        memcpy(&receivedBatchTag, data + 4, 1);
+        memcpy(&receivedBatchTag, data + 10, 1);
         Serial.printf("Mesh transmission received, tag: %u\n", receivedTag);
 
         if (!isDuplicateMessage(receivedTag, receivedBatchTag)) {
@@ -404,7 +381,8 @@ void sendRandomData() {
             }
         }
         // sendESPNowMessage(AP_Address, (const uint8_t *)&message, opTransmissionSize);
-        sendMessageToPeers((const uint8_t *)&message, opTransmissionSize);
+        esp_now_send(0, (const uint8_t *)message.data, sizeof(message.data));
+        // sendMessageToPeers((const uint8_t *)&message, opTransmissionSize);
         delay(50);
     }
 }
@@ -446,23 +424,6 @@ void sendMessageToPeers(const uint8_t *message, size_t len) {
                 Serial.println(result);
             }
     }
-
-    // for (int i = 0; i < peerCount.total_num; ++i) {
-    //     if (esp_now_fetch_peer(true, &peerInfo) == ESP_OK) {
-    //         Serial.print("P. Sending to peer: ");
-    //         printMacAddress(peerInfo.peer_addr);
-    //         esp_err_t result = esp_now_send(peerInfo.peer_addr, message, sizeof(message));
-    //         if (result == ESP_OK) {
-    //             Serial.println("P. Message sent successfully");
-    //         } else {
-    //             Serial.print("P. Error sending message: ");
-    //             Serial.println(result);
-    //         }
-    //     } else {
-    //         Serial.printf("P. Failed to fetch details for peer %d\n", i + 1);
-    //     }
-    //     delay(50); // Add a small delay between sending messages to different peers
-    // }
 }
 
 bool isDuplicateMessage(uint32_t messageTag, uint8_t batchTag) {
