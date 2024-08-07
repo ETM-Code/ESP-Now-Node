@@ -10,8 +10,6 @@
             "includePath": [
                 "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/include",
                 "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/src",
-                "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
-                "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/SPI/src",
                 "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/.pio/libdeps/esp32dev/ESPAsyncWebServer-esphome/src",
                 "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                 "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/FS/src",
@@ -234,6 +232,7 @@
                 "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/RainMaker/src",
                 "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/SD/src",
                 "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/SD_MMC/src",
+                "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/SPI/src",
                 "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/SPIFFS/src",
                 "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/SimpleBLE/src",
                 "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/Ticker/src",
@@ -242,6 +241,7 @@
                 "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/WebServer/src",
                 "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                 "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
+                "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                 ""
             ],
             "browse": {
@@ -249,8 +249,6 @@
                 "path": [
                     "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/include",
                     "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/src",
-                    "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
-                    "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/SPI/src",
                     "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/.pio/libdeps/esp32dev/ESPAsyncWebServer-esphome/src",
                     "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                     "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/FS/src",
@@ -473,6 +471,7 @@
                     "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/RainMaker/src",
                     "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/SD/src",
                     "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/SD_MMC/src",
+                    "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/SPI/src",
                     "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/SPIFFS/src",
                     "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/SimpleBLE/src",
                     "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/Ticker/src",
@@ -481,6 +480,7 @@
                     "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/WebServer/src",
                     "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                     "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
+                    "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                     ""
                 ]
             },
