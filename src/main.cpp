@@ -2,34 +2,205 @@
 #include <esp_now.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
+#include <cstring>
 
-// Maximum number of peers
+// Definitions
 #define MAX_PEERS 30
+#define MAX_MESSAGES_PER_NODE 3
+#define MAX_DATA_SIZE 6000
+#define CHUNK_SIZE 250
+#define DATA_SIZE (CHUNK_SIZE - 6)
+#define SETUP_COMMAND 2069783108202043734ULL
+#define FIRST_BITS 483868772U
+#define LAST_BITS 2952687110U
+#define MESH_TRANSMISSION_INT 12345678
+#define ROUTER_TRANSMISSION_INT 87654321
+#define SCAN_DURATION 10000
+#define WIFI_CHANNEL 1
+#define FIRST_N_BYTES_TO_PRINT 5
+#define MESSAGE_TAGS_TO_STORE 30
+#define NO_OF_BATCH_TAGS 25
+#define MAC_ADDRESSES_TO_STORE 15
 
+#define SCAN_DURATION 10000
+#define NODE_TRANSMISSION_INTERVAL_MIN 5000
+#define NODE_TRANSMISSION_INTERVAL_MAX 10000
+
+#define DATA_SIZE 6000
+#define TRANSMISSION_SIZE 250 //Maximum bytes transmissable by ESP_Now in a single batch
+#define USABLE_TRANSMISSION_SPACE 239 //Allocate 4 bytes for message identifier, 1 for batch identifier, 6 for mac address
+
+int divideAndRoundUp(int numerator, int denominator) {
+    if (denominator == 0) {
+        Serial.println("Denominator cannot be zero.");
+    }
+    // Perform integer division
+    int result = numerator / denominator;
+    // Check if there is a remainder
+    if (numerator % denominator != 0) {
+        result += 1; // Increment result if there is any remainder
+    }
+    return result;
+}
+const int numberOfTransmissions = divideAndRoundUp(DATA_SIZE, USABLE_TRANSMISSION_SPACE);
+
+
+
+#define WIFI_CHANNEL 1
+#define SEND_INTERVAL 1000
+
+#define MESSAGE_TAGS_TO_STORE 30
+#define NO_OF_BATCH_TAGS 25
+#define MESSAGES_TO_STORE 2
+
+uint32_t router_transmission_int = ROUTER_TRANSMISSION_INT;
+
+// WiFi Credentials
+uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 const char* ssid = "ESP32_Network";
 const char* password = "password123";
 IPAddress local_IP(192, 168, 4, 1);
 IPAddress gateway(192, 168, 4, 1);
 IPAddress subnet(255, 255, 255, 0);
 
-// Structure to store received data
 typedef struct {
-    uint8_t mac_addr[6];
-    uint8_t* data;
-    uint16_t length; // Add length to handle varying data sizes
-    bool sent;       // Flag to indicate if the data has been sent
-} BroadcastMessage;
+    alignas(4) uint8_t address[6];
+} MacAddress;
 
-// Array to store received messages
-BroadcastMessage receivedMessages[MAX_PEERS];
+alignas(4) MacAddress macAddresses[MAC_ADDRESSES_TO_STORE] = {0};
+alignas(4) uint8_t macAddressBookmark = 0;
+// alignas(4) uint8_t numSavedAddresses = 0;
+// alignas(4) uint8_t macArrayNumber = 0;
 
-// Index to keep track of stored messages
-int currentIndex = 0;
+// typedef struct {
+//     // MacAddress addresses[MAC_ADDRESSES_TO_STORE];
+//     uint8_t data[MESSAGES_TO_STORE][DATA_SIZE]; 
+// } apData;
+size_t totalSize = (DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE)+MAC_ADDRESSES_TO_STORE;
+uint8_t responseBuffer[(DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE)+MAC_ADDRESSES_TO_STORE];
+
+
+// uint8_t messageData[MESSAGES_TO_STORE][DATA_SIZE] = {0};
+alignas(4) uint8_t messageData[MAC_ADDRESSES_TO_STORE /* store by mac address */][MESSAGES_TO_STORE][DATA_SIZE] = {0};
+// alignas(4) MacAddress addressList[MAC_ADDRESSES_TO_STORE] = {0};
+alignas(4) uint8_t messageDataBookmark[MAC_ADDRESSES_TO_STORE] = {0};
+alignas(4) uint8_t messageDataSubBookmark[MAC_ADDRESSES_TO_STORE] = {0};
+// alignas(4) uint8_t messageDataAddressBookmark = 0;
+
+
+alignas(4) uint32_t messageTags[MESSAGE_TAGS_TO_STORE] = {0};
+alignas(4) uint8_t messageTagBookmark = 0;
+alignas(4) uint8_t batchTags[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS] = {0};
+alignas(4) uint8_t batchTagsBookmark[MESSAGE_TAGS_TO_STORE] = {0};
+alignas(4) uint8_t batchData[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS][USABLE_TRANSMISSION_SPACE] = {0};
+alignas(4) uint8_t batchDataBookmark = 0;
+alignas(4) uint8_t currentPersonalBatchTag = 0;
+alignas(4) MacAddress myMacAddress;
+
+unsigned long lastDataSend = 0;
+alignas(4) uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+//Defining Message Types
+typedef struct {
+    alignas(4) MacAddress macAddress;
+    uint32_t messageTag;
+    uint8_t batchTag;
+    alignas(4) uint8_t data[USABLE_TRANSMISSION_SPACE];
+} opTransmission;
+const size_t opTransmissionSize = sizeof(opTransmission);
+
+typedef struct {
+    uint32_t code;
+    alignas(4) uint8_t routerAddress[6];
+} scanTransmission;
+const size_t scanTransmissionSize = sizeof(scanTransmission);
+
+unsigned long lastScanBroadcastTime = 0;
+
+alignas(4) uint8_t data[DATA_SIZE] = {0}; //declared for send-random-data function to overcome stack allocation issues
+
+
+// Structures and Variables
+
+bool scanMode = false;
+unsigned long scanEndTime = 0;
+
+// Function Prototypes
+void printMacAddress(const uint8_t* mac_addr);
+void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len);
+void initESPNow();
+void handleSerialInput();
+void onRequest(AsyncWebServerRequest* request);
+void initTCPServer();
+void handleRestart();
+void handleScan();
+bool isTrustedPeer(const uint8_t* mac_addr);
+void addTrustedPeer(const uint8_t* mac_addr);
+bool addPeer(const uint8_t* mac_addr);
+bool isDuplicateMessage(uint32_t messageTag, uint8_t batchTag, const uint8_t* mac_addr);
+void creditMacAddress(const MacAddress* macAddr);
+void allocateMemoryForMessage(int index, int messageIndex);
+void handleIncomingData(const opTransmission* message, const uint8_t* mac_addr, int dataLength, int index);
 
 // TCP server on port 80
 AsyncWebServer server(80);
 
-// Function to print MAC address to serial
+void setup() {
+    Serial.begin(115200);
+    
+    // Set WiFi mode to both AP and STA
+    WiFi.mode(WIFI_AP_STA);
+    
+    if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
+        Serial.println("AP Config Failed");
+    }
+
+    WiFi.softAP(ssid, password);
+    
+    initESPNow();
+    initTCPServer();
+
+    Serial.println("ESP32 AP is running");
+    Serial.print("AP IP Address: ");
+    Serial.println(WiFi.softAPIP());
+    Serial.print("STA MAC Address: ");
+    uint8_t myAddress[6];
+    WiFi.macAddress(myAddress);
+    Serial.print("Mac Address: ");
+    for (int i = 0;  i < 6; i++) {
+        Serial.print(myAddress[i], HEX);
+        if (i < 5) {
+            Serial.print(":");
+        }
+    }
+    Serial.println();
+
+    // Add the broadcast peer
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+    peerInfo.channel = WIFI_CHANNEL;
+    peerInfo.encrypt = false;
+
+    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+        Serial.println("Failed to add broadcast peer");
+    } else {
+        Serial.println("Added broadcast peer");
+    }
+}
+
+void loop() {
+    handleSerialInput();
+    // Nothing to do here, all logic handled in callbacks and TCP server
+}
+
+void initESPNow() {
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("Error initializing ESP-NOW");
+        return;
+    }
+    esp_now_register_recv_cb(onDataRecv);
+}
+
 void printMacAddress(const uint8_t* mac_addr) {
     for (int i = 0; i < 6; i++) {
         if (mac_addr[i] < 16) {
@@ -40,128 +211,225 @@ void printMacAddress(const uint8_t* mac_addr) {
             Serial.print(":");
         }
     }
+    Serial.println();
 }
 
-// Callback when data is received
+bool addPeer(const uint8_t* mac_addr) {
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(peerInfo.peer_addr, mac_addr, 6);
+    peerInfo.channel = WIFI_CHANNEL;
+    peerInfo.encrypt = false;
+    return esp_now_add_peer(&peerInfo) == ESP_OK;
+
+}
+
+bool isDuplicateMessage(uint32_t messageTag, uint8_t batchTag) {
+    for (int i = 0; i < MESSAGE_TAGS_TO_STORE; i++) {
+        if (messageTag == messageTags[i]) {
+            if (isDuplicateBatch(messageTag, batchTag, i)) {
+                return true;
+            } else {
+                // If batch number is not found, add it
+                batchTags[i][batchTagsBookmark[i]] = batchTag;
+                batchTagsBookmark[i] = (batchTagsBookmark[i] + 1) % NO_OF_BATCH_TAGS; // Wrap around correctly
+                return false;
+            }
+        }
+    }
+    // If message number is not found, add it
+    messageTags[messageTagBookmark] = messageTag;
+    batchTags[messageTagBookmark][0] = batchTag; // Initialize the first batchTag for the new messageTag
+    batchTagsBookmark[messageTagBookmark] = 1;   // Initialize the batchTagsBookmark for the new messageTag
+    messageTagBookmark = (messageTagBookmark + 1) % MESSAGE_TAGS_TO_STORE;
+
+    return false;
+}
+
+bool isDuplicateBatch(uint32_t messageTag, uint8_t batchTag, int messageTagNum) {
+    for (int i = 0; i < NO_OF_BATCH_TAGS; i++) {
+        if (batchTag == batchTags[messageTagNum][i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool isDuplicateAddress(const uint8_t* mac_addr) {
+    for (const auto& addr : macAddresses) {
+        if (memcmp(addr.address, mac_addr, 6) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+
 void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
-    Serial.print("Received message from: ");
+    Serial.print("Data received from MAC: ");
     printMacAddress(mac_addr);
-    Serial.println();
 
-    if (len != 6006) {  // 6 bytes MAC address + 6000 bytes data
-        Serial.println("Invalid message length");
-        return;
-    }
 
-    // Check if MAC address already exists
-    int index = -1;
-    for (int i = 0; i < currentIndex; i++) {
-        if (memcmp(receivedMessages[i].mac_addr, mac_addr, 6) == 0) {
-            index = i;
-            break;
+    uint64_t setupMessage;
+    memcpy(&setupMessage, incomingData, sizeof(uint64_t));
+
+    if (len == sizeof(uint64_t) && setupMessage == SETUP_COMMAND) { //Check for setup message
+        if(macAddressBookmark<=MAC_ADDRESSES_TO_STORE){
+            if(!isDuplicateAddress){
+                if(addPeer(mac_addr)){
+                    Serial.println("Added AP Address");
+                    macAddressBookmark++;
+                }
+                else {
+                    Serial.println("Failed to add AP Address");
+                }
+            }
         }
+        else{Serial.println("Out of storage, cannot add new peer");}
     }
 
-    if (index == -1) {
-        // New MAC address, store in the next available slot
-        if (currentIndex < MAX_PEERS) {
-            index = currentIndex++;
-        } else {
-            // If we've reached the max number of peers, override the oldest entry
-            index = 0;
-            currentIndex = 1;
+    if(len > 5 && len < 251){
+        MacAddress receivedAddress;
+        memcpy(&receivedAddress.address, data, 6);
+        uint32_t receivedTag;
+        memcpy(&receivedTag, incomingData + 6, 4);
+        uint8_t receivedBatchTag;
+        memcpy(&receivedBatchTag, incomingData + 10, 1);
+        Serial.printf("Mesh transmission received, tag: %u\n", receivedTag);
+
+        if (!isDuplicateMessage(receivedTag, receivedBatchTag)) {
+            messageTags[messageTagBookmark] = receivedTag;
+            messageTagBookmark = (messageTagBookmark + 1) % MESSAGE_TAGS_TO_STORE;
+            size_t receivedDataLength = len-11;
+            uint8_t receivedData[receivedDataLength] = {0};
+            memcpy(receivedData, incomingData+11, (receivedDataLength));
+            if(!isDuplicateAddress((const uint8_t*)&receivedAddress)){
+                // if(macAddressBookmark<MAC_ADDRESSES_TO_STORE){
+                // memcpy((void*)&macAddresses[macAddressBookmark], (void*)&receivedAddress, 6);
+                // memcpy((void*)&messageData[macAddressBookmark][messageDataBookmark[macAddressBookmark]], receivedData, receivedDataLength);
+                // macAddressBookmark++;
+                // }
+                Serial.println("Blocked non-peer message");
+            }
+            else{
+                for (int i = 0; i<macAddressBookmark-1; i++) {
+                    if (memcmp((const void*)&macAddresses[i], (const void*)&receivedAddress, 6) == 0) {
+                        memcpy((void*)&messageData[i][messageDataBookmark[i]], receivedData + messageDataSubBookmark[i], receivedDataLength);
+                        messageDataSubBookmark[i] = (messageDataSubBookmark[i] + receivedDataLength) % MESSAGES_TO_STORE;   
+                        messageDataBookmark[i] = (messageDataBookmark[i] + 1) % MESSAGES_TO_STORE;         
+                    }
+                    else{Serial.println("Error locating mac address (in data receipt area)");}
+                }
+            }
         }
-        receivedMessages[index].data = (uint8_t*)malloc(6000 * sizeof(uint8_t));
-    }
 
-    // Store the MAC address and data
-    memcpy(receivedMessages[index].mac_addr, mac_addr, 6);
-    memcpy(receivedMessages[index].data, incomingData + 6, 6000);
-    receivedMessages[index].length = 6000;
-    receivedMessages[index].sent = false;  // Mark as new data
-
-    // Print 6 sample integers (the n-thousandth of each array)
-    Serial.print("Data from ");
-    printMacAddress(mac_addr);
-    Serial.print(": ");
-    for (int i = 0; i < 6; i++) {
-        Serial.print(receivedMessages[index].data[i * 1000]);
-        if (i < 5) {
-            Serial.print(", ");
-        }
     }
-    Serial.println();
 }
 
-// Initialize ESP-NOW
-void initESPNow() {
-    if (esp_now_init() != ESP_OK) {
-        Serial.println("Error initializing ESP-NOW");
-        return;
-    }
-    esp_now_register_recv_cb(onDataRecv);
+void handleRestart() {
+    macAddressBookmark = 0;
+    memset((void*)macAddresses, 0, sizeof(macAddresses));
+    memset((void*)messageData, 0, sizeof(messageData));
+    memset((void*)messageDataBookmark, 0, sizeof(messageDataBookmark));
+    memset((void*)messageDataSubBookmark, 0, sizeof(messageDataSubBookmark));
+    memset((void*)messageTags, 0, sizeof(messageTags));
+    memset((void*)batchTags, 0, sizeof(batchTags));
+    memset((void*)batchTagsBookmark, 0, sizeof(batchTagsBookmark));
+    memset((void*)batchData, 0, sizeof(batchData));
+    scanMode = false;
+    Serial.println("System restarted and memory cleared.");
+    handleScan();
 }
 
-// TCP request handler
+void handleScan() {
+    Serial.println("Scanning for trusted peers...");
+    scanMode = true;
+    scanEndTime = millis() + SCAN_DURATION;
+
+    uint8_t myAddress[6];
+    WiFi.macAddress(myAddress);
+
+    uint64_t setupTime = SETUP_COMMAND;
+    uint8_t setupMessage[sizeof(SETUP_COMMAND)];
+    memcpy(setupMessage, &setupTime, sizeof(SETUP_COMMAND));
+
+    unsigned long lastSent = 0;
+    while (millis() < scanEndTime) {
+        if (millis() - lastSent > 1000) {
+            esp_err_t result = esp_now_send(broadcastAddress, setupMessage, sizeof(setupMessage));
+            if (result == ESP_OK) {
+                Serial.println("Scan broadcast message sent successfully");
+            } else {
+                Serial.print("Error sending scan broadcast message: ");
+                Serial.println(esp_err_to_name(result));
+            }
+            lastSent = millis();
+        }
+    }
+
+    scanMode = false;
+    Serial.println("Scan complete.");
+}
+
 void onRequest(AsyncWebServerRequest* request) {
-    size_t totalSize = 0;
-    int validIndex = -1;
-    for (int i = 0; i < currentIndex; i++) {
-        if (!receivedMessages[i].sent) {
-            validIndex = i;
-            totalSize = 6 + 2 + receivedMessages[i].length;  // MAC address + length prefix + data
-            break;
+    Serial.println("Received request");
+    if (request->hasParam("message")) {
+        String message = request->getParam("message")->value();
+        if (message == "restart") {
+            handleRestart();
+        } 
+        else if (message == "scan") {
+            handleScan();
         }
-    }
-
-    if (validIndex == -1) {
-        request->send(200, "text/plain", "No new data available.");
+        request->send(200, "text/plain", "Message received");
         return;
     }
 
-    uint8_t* responseBuffer = (uint8_t*)malloc(totalSize);
-    uint8_t* ptr = responseBuffer;
-    memcpy(ptr, receivedMessages[validIndex].mac_addr, 6);
-    ptr += 6;
-    ptr[0] = (uint8_t)((receivedMessages[validIndex].length >> 8) & 0xFF); // High byte of length
-    ptr[1] = (uint8_t)(receivedMessages[validIndex].length & 0xFF);        // Low byte of length
-    ptr += 2;
-    memcpy(ptr, receivedMessages[validIndex].data, receivedMessages[validIndex].length);
+    // size_t totalSize = 0;
+    // int validIndex = -1;
+    // int messageIndex = -1;
 
-    // Create a response to send the binary data
+    // if (validIndex == -1) {
+    //     request->send(200, "text/plain", "No new data available.");
+    //     return;
+    // }
+
+    // uint8_t* responseBuffer = new uint8_t[totalSize];
+    // uint8_t* ptr = responseBuffer;
+    // memcpy(ptr, receivedMessages[validIndex].mac_addr, 6);
+    // ptr += 6;
+    // memcpy(ptr, receivedMessages[validIndex].data[messageIndex], receivedMessages[validIndex].received_length[messageIndex]);
+
+    memcpy(responseBuffer, messageData, sizeof(messageData));
+    memcpy(responseBuffer+sizeof(messageData), macAddresses, sizeof(macAddresses));
+
     AsyncWebServerResponse *response = request->beginResponse_P(200, "application/octet-stream", responseBuffer, totalSize);
     response->addHeader("Content-Disposition", "attachment; filename=data.bin");
     request->send(response);
-    free(responseBuffer);
+    // delete[] responseBuffer;
 
-    // Mark the data as sent
-    receivedMessages[validIndex].sent = true;
+    // receivedMessages[validIndex].sent[messageIndex] = true;
+    // delete[] receivedMessages[validIndex].data[messageIndex];
+    // receivedMessages[validIndex].data[messageIndex] = nullptr;
+    // receivedMessages[validIndex].received_length[messageIndex] = 0;
 }
 
-void setup() {
-    // Initialize Serial Monitor
-    Serial.begin(115200);
-
-    // Configure static IP address
-    if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
-        Serial.println("AP Config Failed");
-    }
-
-    // Initialize Wi-Fi as Station and SoftAP
-    WiFi.softAP(ssid, password);
-
-    // Initialize ESP-NOW
-    initESPNow();
-
-    // Initialize TCP server
+void initTCPServer() {
     server.on("/", HTTP_GET, onRequest);
     server.begin();
-
-    Serial.println("ESP32 AP is running");
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.softAPIP());
 }
 
-void loop() {
-    // Nothing to do here, all logic handled in callbacks and TCP server
+void handleSerialInput() {
+    if (Serial.available() > 0) {
+        String input = Serial.readStringUntil('\n');
+        input.trim();
+        if (input == "restart") {
+            handleRestart();
+        } else if (input == "scan") {
+            handleScan();
+            Serial.println("Scanning for trusted peers...");
+        } else {
+            Serial.println("Unknown command.");
+        }
+    }
 }

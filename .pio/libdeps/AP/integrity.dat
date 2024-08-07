@@ -1,0 +1,5 @@
+regenbogencode/ESPNowW@^1.0.2
+FS
+esp32
+esphome/AsyncTCP-esphome@^2.1.3
+esphome/ESPAsyncWebServer-esphome@^3.2.2
