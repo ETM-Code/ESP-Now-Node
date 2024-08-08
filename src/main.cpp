@@ -71,7 +71,7 @@ alignas(4) MacAddress macAddresses[MAC_ADDRESSES_TO_STORE] = {0};
 alignas(4) uint8_t macAddressBookmark = 0;
 
 size_t totalSize = (DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE)+(MAC_ADDRESSES_TO_STORE*8);
-// uint8_t responseBuffer[(DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE)+(MAC_ADDRESSES_TO_STORE*6)+30];
+uint8_t responseBuffer[(DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE)+(MAC_ADDRESSES_TO_STORE*6)+30];
 
 alignas(4) uint8_t messageData[MAC_ADDRESSES_TO_STORE /* store by mac address */][MESSAGES_TO_STORE][DATA_SIZE] = {0};
 alignas(4) uint8_t messageDataBookmark[MAC_ADDRESSES_TO_STORE] = {0};
@@ -368,27 +368,27 @@ void handleScan() {
 
 void onRequest(AsyncWebServerRequest* request) {
     Serial.println("Received request");
-    // if (request->hasParam("message")) {
-    //     String message = request->getParam("message")->value();
-    //     if (message == "restart") {
-    //         handleRestart();
-    //     } 
-    //     else if (message == "scan") {
-    //         handleScan();
-    //     }
-    //     size_t messageDataSize = DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE;
-    //     size_t macAddressesSize = 
-    //     request->send(new CustomResponse(messageData, messageDataSize, macAddresses, macAddressesSize));;
-    //     return;
-    // }
+    if (request->hasParam("message")) {
+        String message = request->getParam("message")->value();
+        if (message == "restart") {
+            handleRestart();
+        } 
+        else if (message == "scan") {
+            handleScan();
+        }
+        // size_t messageDataSize = DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE;
+        // size_t macAddressesSize = 
+        // request->send(new CustomResponse(messageData, messageDataSize, macAddresses, macAddressesSize));;
+        // return;
+    }
 
 
-    // memcpy(responseBuffer, messageData, sizeof(messageData));
-    // memcpy(responseBuffer+sizeof(messageData), macAddresses, sizeof(macAddresses));
+    memcpy(responseBuffer, messageData, sizeof(messageData));
+    memcpy(responseBuffer+sizeof(messageData), macAddresses, sizeof(macAddresses));
 
-    // AsyncWebServerResponse *response = request->beginResponse_P(200, "application/octet-stream", responseBuffer, totalSize);
-    // response->addHeader("Content-Disposition", "attachment; filename=data.bin");
-    // request->send(response);
+    AsyncWebServerResponse *response = request->beginResponse_P(200, "application/octet-stream", responseBuffer, totalSize);
+    response->addHeader("Content-Disposition", "attachment; filename=data.bin");
+    request->send(response);
 }
 
 void initTCPServer() {
