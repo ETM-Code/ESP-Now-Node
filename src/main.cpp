@@ -301,6 +301,7 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
                 if(macAddressBookmark<MAC_ADDRESSES_TO_STORE){
                 memcpy((void*)&macAddresses[macAddressBookmark], (void*)&receivedAddress, 6);
                 memcpy((void*)&messageData[macAddressBookmark][messageDataBookmark[macAddressBookmark]], receivedData, receivedDataLength);
+                messageDataSubBookmark[macAddressBookmark] = (messageDataSubBookmark[macAddressBookmark] + receivedDataLength) % (MESSAGES_TO_STORE-1);
                 macAddressBookmark++;
                 }
                 Serial.println("Blocked non-peer message");
@@ -310,8 +311,10 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
                 for (int i = 0; i<macAddressBookmark-1; i++) {
                     if (memcmp((const void*)&macAddresses[i], (const void*)&receivedAddress, 6) == 0) {
                         memcpy((void*)&messageData[i][messageDataBookmark[i]], receivedData + messageDataSubBookmark[i], receivedDataLength);
-                        messageDataSubBookmark[i] = (messageDataSubBookmark[i] + receivedDataLength) % MESSAGES_TO_STORE;   
-                        messageDataBookmark[i] = (messageDataBookmark[i] + 1) % MESSAGES_TO_STORE;         
+                        uint16_t previousValue = messageDataSubBookmark[i];
+                        messageDataSubBookmark[i] = (messageDataSubBookmark[i] + receivedDataLength) % (MESSAGES_TO_STORE-1);
+                        if(messageDataSubBookmark[i] < previousValue){
+                        messageDataBookmark[i] = (messageDataBookmark[i] + 1) % MESSAGES_TO_STORE;}
                     }
                     else{Serial.println("Error locating mac address (in data receipt area)");}
                 }
