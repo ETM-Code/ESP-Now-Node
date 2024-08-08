@@ -211,16 +211,18 @@ void loop() {
         if (currentMillis - lastScanBroadcastTime > 1000) {
             esp_now_peer_info_t peerInfo = {};
 
-            // Add the broadcast peer
-            memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-            peerInfo.channel = WIFI_CHANNEL;
-            peerInfo.encrypt = false;
 
-            if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-                Serial.println("Failed to add broadcast peer");
-                return;
+            if (!esp_now_is_peer_exist(broadcastAddress)){
+                // Add the broadcast peer
+                memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+                peerInfo.channel = WIFI_CHANNEL;
+                peerInfo.encrypt = false;
+
+                if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+                    Serial.println("Failed to add broadcast peer");
+                    return;
+                }
             }
-
             scanTransmission scanMessage;
             scanMessage.code = setupMessageFirst32Bits;
             memcpy(scanMessage.routerAddress, AP_Address, 6);
@@ -263,14 +265,24 @@ void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
         // removeAllPeers();
 
         if(addPeer(mac_addr)){
-            Serial.println("Added AP Address");
-
+            // Serial.println("Added AP Address");
+            // Serial.print("Size of setup message: ");
+            // Serial.println(sizeof(setupMessage));
+            // Serial.print("Length of message: ");
+            // Serial.println(len);
             // Send setup message back to AP
-            if (sendESPNowMessage(mac_addr, (const uint8_t*)&setupMessage, sizeof(setupMessage))) {
+            esp_err_t result = esp_now_send(mac_addr, (uint8_t*)&setupMessage, len);
+            if (result == ESP_OK) {
                 Serial.println("Setup message sent back to AP");
             } else {
                 Serial.println("Failed to send setup message back to AP");
+                Serial.println(result);
             }
+            // if (sendESPNowMessage(mac_addr, (const uint8_t*)&setupMessage, len)) {
+                
+            // } else {
+                
+            // }
         }
         else {
             Serial.println("Failed to add AP Address");
@@ -337,7 +349,7 @@ void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
     //     Serial.print("Received code: ");
     //     Serial.println(receivedCode);
     // }
-    else if (len > 5 && len < 251) { //check if data transmission
+    else if (len > 64 && len < 251 && !scanMode && esp_now_is_peer_exist(mac_addr)) { //check if data transmission
         MacAddress incomingAddress;
         for(int i = 0; i<6; i++){
         memcpy(&incomingAddress.address[i], data+i, 1);}
@@ -353,7 +365,8 @@ void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
             }
             messageTags[messageTagBookmark] = receivedTag;
             sendMessageToPeers(data, len);
-            sendESPNowMessage(AP_Address, (const uint8_t *)&len, len);
+            // sendESPNowMessage(AP_Address, (const uint8_t *)&len, len);
+            esp_now_send(AP_Address, data, len);
         } else {
             Serial.println("Duplicate message, discarding.");
         }
@@ -365,7 +378,8 @@ void sendRandomData() {
     generateRandomData(data, DATA_SIZE);
     uint32_t messageIdentifier = esp_random();
 
-    Serial.println("Sending random data to AP and peers");
+    Serial.print("Sending random data to AP and peers. Time: ");
+    Serial.println(millis());
     for (int i = 0; i < numberOfTransmissions; i++) {
         opTransmission message;
         message.macAddress = myMacAddress;
