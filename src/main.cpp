@@ -9,7 +9,7 @@
 #define MAX_MESSAGES_PER_NODE 3
 #define MAX_DATA_SIZE 6000
 #define CHUNK_SIZE 250
-#define DATA_SIZE (CHUNK_SIZE - 6)
+
 #define SETUP_COMMAND 2069783108202043734ULL
 #define FIRST_BITS 483868772U
 #define LAST_BITS 2952687110U
@@ -18,9 +18,9 @@
 #define SCAN_DURATION 10000
 #define WIFI_CHANNEL 1
 #define FIRST_N_BYTES_TO_PRINT 5
-#define MESSAGE_TAGS_TO_STORE 30
+// #define MESSAGE_TAGS_TO_STORE 30
 #define NO_OF_BATCH_TAGS 25
-#define MAC_ADDRESSES_TO_STORE 15
+#define MAC_ADDRESSES_TO_STORE 5
 
 #define SCAN_DURATION 10000
 #define NODE_TRANSMISSION_INTERVAL_MIN 5000
@@ -49,9 +49,9 @@ const int numberOfTransmissions = divideAndRoundUp(DATA_SIZE, USABLE_TRANSMISSIO
 #define WIFI_CHANNEL 1
 #define SEND_INTERVAL 1000
 
-#define MESSAGE_TAGS_TO_STORE 30
+#define MESSAGE_TAGS_TO_STORE 15
 #define NO_OF_BATCH_TAGS 25
-#define MESSAGES_TO_STORE 2
+#define MESSAGES_TO_STORE 1
 
 uint32_t router_transmission_int = ROUTER_TRANSMISSION_INT;
 
@@ -69,36 +69,24 @@ typedef struct {
 
 alignas(4) MacAddress macAddresses[MAC_ADDRESSES_TO_STORE] = {0};
 alignas(4) uint8_t macAddressBookmark = 0;
-// alignas(4) uint8_t numSavedAddresses = 0;
-// alignas(4) uint8_t macArrayNumber = 0;
 
-// typedef struct {
-//     // MacAddress addresses[MAC_ADDRESSES_TO_STORE];
-//     uint8_t data[MESSAGES_TO_STORE][DATA_SIZE]; 
-// } apData;
-size_t totalSize = (DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE)+MAC_ADDRESSES_TO_STORE;
-uint8_t responseBuffer[(DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE)+MAC_ADDRESSES_TO_STORE];
+size_t totalSize = (DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE)+(MAC_ADDRESSES_TO_STORE*8);
+// uint8_t responseBuffer[(DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE)+(MAC_ADDRESSES_TO_STORE*6)+30];
 
-
-// uint8_t messageData[MESSAGES_TO_STORE][DATA_SIZE] = {0};
 alignas(4) uint8_t messageData[MAC_ADDRESSES_TO_STORE /* store by mac address */][MESSAGES_TO_STORE][DATA_SIZE] = {0};
-// alignas(4) MacAddress addressList[MAC_ADDRESSES_TO_STORE] = {0};
 alignas(4) uint8_t messageDataBookmark[MAC_ADDRESSES_TO_STORE] = {0};
 alignas(4) uint8_t messageDataSubBookmark[MAC_ADDRESSES_TO_STORE] = {0};
-// alignas(4) uint8_t messageDataAddressBookmark = 0;
-
 
 alignas(4) uint32_t messageTags[MESSAGE_TAGS_TO_STORE] = {0};
 alignas(4) uint8_t messageTagBookmark = 0;
 alignas(4) uint8_t batchTags[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS] = {0};
 alignas(4) uint8_t batchTagsBookmark[MESSAGE_TAGS_TO_STORE] = {0};
-alignas(4) uint8_t batchData[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS][USABLE_TRANSMISSION_SPACE] = {0};
+// alignas(4) uint8_t batchData[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS][USABLE_TRANSMISSION_SPACE] = {0};
 alignas(4) uint8_t batchDataBookmark = 0;
 alignas(4) uint8_t currentPersonalBatchTag = 0;
 alignas(4) MacAddress myMacAddress;
 
 unsigned long lastDataSend = 0;
-alignas(4) uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 //Defining Message Types
 typedef struct {
@@ -117,7 +105,7 @@ const size_t scanTransmissionSize = sizeof(scanTransmission);
 
 unsigned long lastScanBroadcastTime = 0;
 
-alignas(4) uint8_t data[DATA_SIZE] = {0}; //declared for send-random-data function to overcome stack allocation issues
+// alignas(4) uint8_t data[DATA_SIZE] = {0}; //declared for send-random-data function to overcome stack allocation issues
 
 
 // Structures and Variables
@@ -134,13 +122,10 @@ void onRequest(AsyncWebServerRequest* request);
 void initTCPServer();
 void handleRestart();
 void handleScan();
-bool isTrustedPeer(const uint8_t* mac_addr);
-void addTrustedPeer(const uint8_t* mac_addr);
+bool isDuplicateBatch(uint32_t messageTag, uint8_t batchTag, int messageTagNum);
+
+
 bool addPeer(const uint8_t* mac_addr);
-bool isDuplicateMessage(uint32_t messageTag, uint8_t batchTag, const uint8_t* mac_addr);
-void creditMacAddress(const MacAddress* macAddr);
-void allocateMemoryForMessage(int index, int messageIndex);
-void handleIncomingData(const opTransmission* message, const uint8_t* mac_addr, int dataLength, int index);
 
 // TCP server on port 80
 AsyncWebServer server(80);
@@ -255,8 +240,12 @@ bool isDuplicateBatch(uint32_t messageTag, uint8_t batchTag, int messageTagNum) 
 }
 
 bool isDuplicateAddress(const uint8_t* mac_addr) {
-    for (const auto& addr : macAddresses) {
-        if (memcmp(addr.address, mac_addr, 6) == 0) {
+    for (int i = 0; i<MAC_ADDRESSES_TO_STORE; i++) {
+        if (memcmp((void*)&macAddresses[i], mac_addr, 6) == 0) {
+            // Serial.println("(COMP) Incoming Address: ");
+            // printMacAddress(mac_addr);
+            // Serial.println("(COMP) Compared Address: ");
+            // printMacAddress((uint8_t*)&macAddresses[i]);
             return true;
         }
     }
@@ -268,29 +257,34 @@ bool isDuplicateAddress(const uint8_t* mac_addr) {
 void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
     Serial.print("Data received from MAC: ");
     printMacAddress(mac_addr);
-
+    Serial.print("Length of message: ");
+    Serial.println(len);
 
     uint64_t setupMessage;
     memcpy(&setupMessage, incomingData, sizeof(uint64_t));
 
-    if (len == sizeof(uint64_t) && setupMessage == SETUP_COMMAND) { //Check for setup message
+    if (len == sizeof(uint64_t) /*&& setupMessage == SETUP_COMMAND*/) { //Check for setup message
+        Serial.println("Received scan response message");
         if(macAddressBookmark<=MAC_ADDRESSES_TO_STORE){
-            if(!isDuplicateAddress){
+            if(!isDuplicateAddress(mac_addr)){
+                Serial.println("Isn't a duplicate address");
                 if(addPeer(mac_addr)){
-                    Serial.println("Added AP Address");
+                    Serial.println("Added Address");
+                    memcpy(&macAddresses[macAddressBookmark], mac_addr, sizeof(macAddresses[0]));
                     macAddressBookmark++;
                 }
                 else {
-                    Serial.println("Failed to add AP Address");
+                    Serial.println("Failed to add address");
                 }
             }
+            else{Serial.println("Is a duplicate address");}
         }
         else{Serial.println("Out of storage, cannot add new peer");}
     }
 
-    if(len > 5 && len < 251){
+    if(len > 5 && len < 251 && !scanMode){
         MacAddress receivedAddress;
-        memcpy(&receivedAddress.address, data, 6);
+        memcpy(&receivedAddress.address, incomingData, 6);
         uint32_t receivedTag;
         memcpy(&receivedTag, incomingData + 6, 4);
         uint8_t receivedBatchTag;
@@ -303,15 +297,16 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
             size_t receivedDataLength = len-11;
             uint8_t receivedData[receivedDataLength] = {0};
             memcpy(receivedData, incomingData+11, (receivedDataLength));
-            if(!isDuplicateAddress((const uint8_t*)&receivedAddress)){
-                // if(macAddressBookmark<MAC_ADDRESSES_TO_STORE){
-                // memcpy((void*)&macAddresses[macAddressBookmark], (void*)&receivedAddress, 6);
-                // memcpy((void*)&messageData[macAddressBookmark][messageDataBookmark[macAddressBookmark]], receivedData, receivedDataLength);
-                // macAddressBookmark++;
-                // }
+             if(!isDuplicateAddress(mac_addr)){
+                if(macAddressBookmark<MAC_ADDRESSES_TO_STORE){
+                memcpy((void*)&macAddresses[macAddressBookmark], (void*)&receivedAddress, 6);
+                memcpy((void*)&messageData[macAddressBookmark][messageDataBookmark[macAddressBookmark]], receivedData, receivedDataLength);
+                macAddressBookmark++;
+                }
                 Serial.println("Blocked non-peer message");
             }
             else{
+                Serial.println("Got a real message");
                 for (int i = 0; i<macAddressBookmark-1; i++) {
                     if (memcmp((const void*)&macAddresses[i], (const void*)&receivedAddress, 6) == 0) {
                         memcpy((void*)&messageData[i][messageDataBookmark[i]], receivedData + messageDataSubBookmark[i], receivedDataLength);
@@ -335,7 +330,7 @@ void handleRestart() {
     memset((void*)messageTags, 0, sizeof(messageTags));
     memset((void*)batchTags, 0, sizeof(batchTags));
     memset((void*)batchTagsBookmark, 0, sizeof(batchTagsBookmark));
-    memset((void*)batchData, 0, sizeof(batchData));
+    // memset((void*)batchData, 0, sizeof(batchData));
     scanMode = false;
     Serial.println("System restarted and memory cleared.");
     handleScan();
@@ -373,45 +368,27 @@ void handleScan() {
 
 void onRequest(AsyncWebServerRequest* request) {
     Serial.println("Received request");
-    if (request->hasParam("message")) {
-        String message = request->getParam("message")->value();
-        if (message == "restart") {
-            handleRestart();
-        } 
-        else if (message == "scan") {
-            handleScan();
-        }
-        request->send(200, "text/plain", "Message received");
-        return;
-    }
-
-    // size_t totalSize = 0;
-    // int validIndex = -1;
-    // int messageIndex = -1;
-
-    // if (validIndex == -1) {
-    //     request->send(200, "text/plain", "No new data available.");
+    // if (request->hasParam("message")) {
+    //     String message = request->getParam("message")->value();
+    //     if (message == "restart") {
+    //         handleRestart();
+    //     } 
+    //     else if (message == "scan") {
+    //         handleScan();
+    //     }
+    //     size_t messageDataSize = DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE;
+    //     size_t macAddressesSize = 
+    //     request->send(new CustomResponse(messageData, messageDataSize, macAddresses, macAddressesSize));;
     //     return;
     // }
 
-    // uint8_t* responseBuffer = new uint8_t[totalSize];
-    // uint8_t* ptr = responseBuffer;
-    // memcpy(ptr, receivedMessages[validIndex].mac_addr, 6);
-    // ptr += 6;
-    // memcpy(ptr, receivedMessages[validIndex].data[messageIndex], receivedMessages[validIndex].received_length[messageIndex]);
 
-    memcpy(responseBuffer, messageData, sizeof(messageData));
-    memcpy(responseBuffer+sizeof(messageData), macAddresses, sizeof(macAddresses));
+    // memcpy(responseBuffer, messageData, sizeof(messageData));
+    // memcpy(responseBuffer+sizeof(messageData), macAddresses, sizeof(macAddresses));
 
-    AsyncWebServerResponse *response = request->beginResponse_P(200, "application/octet-stream", responseBuffer, totalSize);
-    response->addHeader("Content-Disposition", "attachment; filename=data.bin");
-    request->send(response);
-    // delete[] responseBuffer;
-
-    // receivedMessages[validIndex].sent[messageIndex] = true;
-    // delete[] receivedMessages[validIndex].data[messageIndex];
-    // receivedMessages[validIndex].data[messageIndex] = nullptr;
-    // receivedMessages[validIndex].received_length[messageIndex] = 0;
+    // AsyncWebServerResponse *response = request->beginResponse_P(200, "application/octet-stream", responseBuffer, totalSize);
+    // response->addHeader("Content-Disposition", "attachment; filename=data.bin");
+    // request->send(response);
 }
 
 void initTCPServer() {
