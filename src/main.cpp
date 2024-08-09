@@ -15,14 +15,14 @@
 #define LAST_BITS 2952687110U
 #define MESH_TRANSMISSION_INT 12345678
 #define ROUTER_TRANSMISSION_INT 87654321
-#define SCAN_DURATION 10000
+// #define SCAN_DURATION 10000
 #define WIFI_CHANNEL 1
 #define FIRST_N_BYTES_TO_PRINT 5
 // #define MESSAGE_TAGS_TO_STORE 30
 #define NO_OF_BATCH_TAGS 25
 #define MAC_ADDRESSES_TO_STORE 5
 
-#define SCAN_DURATION 10000
+#define SCAN_DURATION 3000
 #define NODE_TRANSMISSION_INTERVAL_MIN 5000
 #define NODE_TRANSMISSION_INTERVAL_MAX 10000
 
@@ -51,7 +51,7 @@ const int numberOfTransmissions = divideAndRoundUp(DATA_SIZE, USABLE_TRANSMISSIO
 
 #define MESSAGE_TAGS_TO_STORE 15
 #define NO_OF_BATCH_TAGS 25
-#define MESSAGES_TO_STORE 1
+#define MESSAGES_TO_STORE 1 //If increasing, uncomment logic in onDataRecv
 
 uint32_t router_transmission_int = ROUTER_TRANSMISSION_INT;
 
@@ -119,7 +119,8 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len);
 void initESPNow();
 void handleSerialInput();
 void onRequest(AsyncWebServerRequest* request);
-void initTCPServer();
+// void initTCPServer();
+void initWebSocket();
 void handleRestart();
 void handleScan();
 bool isDuplicateBatch(uint32_t messageTag, uint8_t batchTag, int messageTagNum);
@@ -128,7 +129,11 @@ bool isDuplicateBatch(uint32_t messageTag, uint8_t batchTag, int messageTagNum);
 bool addPeer(const uint8_t* mac_addr);
 
 // TCP server on port 80
+// AsyncWebServer server(80);
+
+// Web Socket Server on Port 80
 AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
 
 void setup() {
     Serial.begin(115200);
@@ -143,7 +148,9 @@ void setup() {
     WiFi.softAP(ssid, password);
     
     initESPNow();
-    initTCPServer();
+    // initTCPServer();
+    initWebSocket();
+    server.begin();
 
     Serial.println("ESP32 AP is running");
     Serial.print("AP IP Address: ");
@@ -255,10 +262,10 @@ bool isDuplicateAddress(const uint8_t* mac_addr) {
 
 
 void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
-    Serial.print("Data received from MAC: ");
-    printMacAddress(mac_addr);
-    Serial.print("Length of message: ");
-    Serial.println(len);
+    // Serial.print("Data received from MAC: ");
+    // printMacAddress(mac_addr);
+    // Serial.print("Length of message: ");
+    // Serial.println(len);
 
     uint64_t setupMessage;
     memcpy(&setupMessage, incomingData, sizeof(uint64_t));
@@ -289,7 +296,7 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
         memcpy(&receivedTag, incomingData + 6, 4);
         uint8_t receivedBatchTag;
         memcpy(&receivedBatchTag, incomingData + 10, 1);
-        Serial.printf("Mesh transmission received, tag: %u\n", receivedTag);
+        // Serial.printf("Mesh transmission received, tag: %u\n", receivedTag);
 
         if (!isDuplicateMessage(receivedTag, receivedBatchTag)) {
             messageTags[messageTagBookmark] = receivedTag;
@@ -301,27 +308,49 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
                 if(macAddressBookmark<MAC_ADDRESSES_TO_STORE){
                 memcpy((void*)&macAddresses[macAddressBookmark], (void*)&receivedAddress, 6);
                 memcpy((void*)&messageData[macAddressBookmark][messageDataBookmark[macAddressBookmark]], receivedData, receivedDataLength);
-                messageDataSubBookmark[macAddressBookmark] = (messageDataSubBookmark[macAddressBookmark] + receivedDataLength) % (MESSAGES_TO_STORE-1);
+                messageDataSubBookmark[macAddressBookmark] = (messageDataSubBookmark[macAddressBookmark] + receivedDataLength) % (DATA_SIZE-1);
                 macAddressBookmark++;
                 }
                 Serial.println("Blocked non-peer message");
             }
             else{
                 Serial.println("Got a real message");
-                for (int i = 0; i<macAddressBookmark-1; i++) {
+                Serial.print("macAddressBookmark:  ");
+                Serial.println(macAddressBookmark);
+                for (int i = 0; i<macAddressBookmark; i++) {
+                    Serial.println("Entered loop");
                     if (memcmp((const void*)&macAddresses[i], (const void*)&receivedAddress, 6) == 0) {
                         memcpy((void*)&messageData[i][messageDataBookmark[i]], receivedData + messageDataSubBookmark[i], receivedDataLength);
                         uint16_t previousValue = messageDataSubBookmark[i];
-                        messageDataSubBookmark[i] = (messageDataSubBookmark[i] + receivedDataLength) % (MESSAGES_TO_STORE-1);
-                        if(messageDataSubBookmark[i] < previousValue){
-                        messageDataBookmark[i] = (messageDataBookmark[i] + 1) % MESSAGES_TO_STORE;}
+                        messageDataSubBookmark[i] = (messageDataSubBookmark[i] + receivedDataLength) % (DATA_SIZE-1);
+                        for(int j = 0; j<sizeof(receivedData); j++){
+                        Serial.print(messageData[i][messageDataBookmark[i]][j]);}
+                        // if(messageDataSubBookmark[i] < previousValue){
+                        // messageDataBookmark[i] = (messageDataBookmark[i] + 1) % MESSAGES_TO_STORE;}
                     }
-                    else{Serial.println("Error locating mac address (in data receipt area)");}
+                    else{
+                        Serial.println("Error locating mac address (in data receipt area)");
+                        Serial.println("Received address: ");
+                        for(int k = 0; k<6; k++){
+                            Serial.print(receivedAddress.address[k]);
+                        }
+                        Serial.println();
+                        Serial.println("Local address: ");
+                        for(int k = 0; k<6; k++){
+                            Serial.print(macAddresses[i].address[k]);
+                        }    
+                        
+                    }
                 }
-            }
+                // Serial.print("Received Data: ");
+                //     for(int j = 0; j<sizeof(receivedData); j++){
+                //         Serial.print(receivedData[j]);}
+                //     Serial.println();
+            // }
         }
 
     }
+}
 }
 
 void handleRestart() {
@@ -369,34 +398,69 @@ void handleScan() {
     Serial.println("Scan complete.");
 }
 
-void onRequest(AsyncWebServerRequest* request) {
-    Serial.println("Received request");
-    if (request->hasParam("message")) {
-        String message = request->getParam("message")->value();
-        if (message == "restart") {
-            handleRestart();
-        } 
-        else if (message == "scan") {
-            handleScan();
+// void onRequest(AsyncWebServerRequest* request) {
+//     Serial.println("Received request");
+//     if (request->hasParam("message")) {
+//         String message = request->getParam("message")->value();
+//         if (message == "restart") {
+//             handleRestart();
+//         } 
+//         else if (message == "scan") {
+//             handleScan();
+//         }
+//         // size_t messageDataSize = DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE;
+//         // size_t macAddressesSize = 
+//         // request->send(new CustomResponse(messageData, messageDataSize, macAddresses, macAddressesSize));;
+//         // return;
+//     }
+
+
+//     memcpy(responseBuffer, messageData, sizeof(messageData));
+//     memcpy(responseBuffer+sizeof(messageData), macAddresses, sizeof(macAddresses));
+
+//     AsyncWebServerResponse *response = request->beginResponse_P(200, "application/octet-stream", responseBuffer, totalSize);
+//     response->addHeader("Content-Disposition", "attachment; filename=data.bin");
+//     request->send(response);
+// }
+void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventType type, void * arg, uint8_t *data, size_t len) {
+    if (type == WS_EVT_CONNECT) {
+        Serial.println("WebSocket client connected");
+    } else if (type == WS_EVT_DISCONNECT) {
+        Serial.println("WebSocket client disconnected");
+    } else if (type == WS_EVT_DATA) {
+    Serial.println("WebSocket data received");
+    String msg = (char*)data;
+    Serial.print("Message: ");
+    Serial.println(msg);
+
+    if (msg == "restart") {
+        handleRestart();
+    } else if (msg == "scan") {
+        handleScan();
+    } else if (msg.indexOf("getData") != -1) {  // Check if "getData" is contained within msg
+        Serial.println("Got request for data");
+        memcpy(responseBuffer, messageData, sizeof(messageData));
+        memcpy(responseBuffer + sizeof(messageData), macAddresses, sizeof(macAddresses));
+        client->binary(responseBuffer, totalSize);
+
+        Serial.print("responseBuffer: ");
+        for (int i = 0; i < 2500; i++) {
+            Serial.print(responseBuffer[i]);  // Print each byte as a number
+            Serial.print(" ");  // Add a space between numbers for readability
         }
-        // size_t messageDataSize = DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE;
-        // size_t macAddressesSize = 
-        // request->send(new CustomResponse(messageData, messageDataSize, macAddresses, macAddressesSize));;
-        // return;
+        Serial.println();
+            }
     }
-
-
-    memcpy(responseBuffer, messageData, sizeof(messageData));
-    memcpy(responseBuffer+sizeof(messageData), macAddresses, sizeof(macAddresses));
-
-    AsyncWebServerResponse *response = request->beginResponse_P(200, "application/octet-stream", responseBuffer, totalSize);
-    response->addHeader("Content-Disposition", "attachment; filename=data.bin");
-    request->send(response);
 }
 
-void initTCPServer() {
-    server.on("/", HTTP_GET, onRequest);
-    server.begin();
+// void initTCPServer() {
+//     server.on("/", HTTP_GET, onRequest);
+//     server.begin();
+// }
+
+void initWebSocket() {
+    ws.onEvent(onWsEvent);
+    server.addHandler(&ws);
 }
 
 void handleSerialInput() {
