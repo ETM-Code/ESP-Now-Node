@@ -148,6 +148,7 @@ void setup() {
     }
 
     WiFi.softAP(ssid, password);
+    WiFi.setSleep(false);
     
     initESPNow();
     // initTCPServer();
@@ -180,10 +181,17 @@ void setup() {
     } else {
         Serial.println("Added broadcast peer");
     }
+    delay(3000);
+    handleRestart();
 }
 
 void loop() {
     handleSerialInput();
+//     if (WiFi.softAPgetStationNum() == 0) {
+//     WiFi.softAPdisconnect(true);
+//     WiFi.softAP(ssid, password);
+//     Serial.println("Restarted Wi-Fi AP");
+// }
     // Nothing to do here, all logic handled in callbacks and TCP server
 }
 
@@ -221,9 +229,9 @@ bool addPeer(const uint8_t* mac_addr) {
 bool isDuplicateMessage(uint32_t messageTag, uint8_t batchTag) {
     for (int i = 0; i < MESSAGE_TAGS_TO_STORE; i++) {
         if (messageTag == messageTags[i]) {
-            Serial.println("Duplicate Message");
+            // Serial.println("Duplicate Message");
             if (isDuplicateBatch(messageTag, batchTag, i)) {
-                Serial.println("Duplicate Batch");
+                // Serial.println("Duplicate Batch");
                 return true;
             } else {
                 // If batch number is not found, add it
