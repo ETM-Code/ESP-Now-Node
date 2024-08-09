@@ -364,7 +364,8 @@ void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
                 messageTagBookmark = 0;
             }
             messageTags[messageTagBookmark] = receivedTag;
-            sendMessageToPeers(data, len);
+            // sendMessageToPeers(data, len);
+            esp_now_send(0, data, len);
             // sendESPNowMessage(AP_Address, (const uint8_t *)&len, len);
             esp_now_send(AP_Address, data, len);
         } else {
