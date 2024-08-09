@@ -20,12 +20,13 @@
 #define FIRST_N_BYTES_TO_PRINT 5
 // #define MESSAGE_TAGS_TO_STORE 30
 #define NO_OF_BATCH_TAGS 25
-#define MAC_ADDRESSES_TO_STORE 5
+// #define MAC_ADDRESSES_TO_STORE 5
+#define MAC_ADDRESSES_TO_STORE 2
 
-#define SCAN_DURATION 3000
+#define SCAN_DURATION 5000
 #define NODE_TRANSMISSION_INTERVAL_MIN 5000
 #define NODE_TRANSMISSION_INTERVAL_MAX 10000
-
+bool initialised = false;
 #define DATA_SIZE 6000
 #define TRANSMISSION_SIZE 250 //Maximum bytes transmissable by ESP_Now in a single batch
 #define USABLE_TRANSMISSION_SPACE 239 //Allocate 4 bytes for message identifier, 1 for batch identifier, 6 for mac address
@@ -74,8 +75,9 @@ size_t totalSize = (DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE)+(MAC_ADD
 uint8_t responseBuffer[(DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE)+(MAC_ADDRESSES_TO_STORE*6)+30];
 
 alignas(4) uint8_t messageData[MAC_ADDRESSES_TO_STORE /* store by mac address */][MESSAGES_TO_STORE][DATA_SIZE] = {0};
+bool messageDataToBeWiped[MAC_ADDRESSES_TO_STORE][MESSAGES_TO_STORE] = {false};
 alignas(4) uint8_t messageDataBookmark[MAC_ADDRESSES_TO_STORE] = {0};
-alignas(4) uint8_t messageDataSubBookmark[MAC_ADDRESSES_TO_STORE] = {0};
+alignas(4) int messageDataSubBookmark[MAC_ADDRESSES_TO_STORE] = {0};
 
 alignas(4) uint32_t messageTags[MESSAGE_TAGS_TO_STORE] = {0};
 alignas(4) uint8_t messageTagBookmark = 0;
@@ -207,6 +209,7 @@ void printMacAddress(const uint8_t* mac_addr) {
 }
 
 bool addPeer(const uint8_t* mac_addr) {
+    esp_now_del_peer(mac_addr);
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, mac_addr, 6);
     peerInfo.channel = WIFI_CHANNEL;
@@ -218,7 +221,9 @@ bool addPeer(const uint8_t* mac_addr) {
 bool isDuplicateMessage(uint32_t messageTag, uint8_t batchTag) {
     for (int i = 0; i < MESSAGE_TAGS_TO_STORE; i++) {
         if (messageTag == messageTags[i]) {
+            Serial.println("Duplicate Message");
             if (isDuplicateBatch(messageTag, batchTag, i)) {
+                Serial.println("Duplicate Batch");
                 return true;
             } else {
                 // If batch number is not found, add it
@@ -235,6 +240,24 @@ bool isDuplicateMessage(uint32_t messageTag, uint8_t batchTag) {
     messageTagBookmark = (messageTagBookmark + 1) % MESSAGE_TAGS_TO_STORE;
 
     return false;
+}
+
+bool isDuplicateMessageTag(uint32_t messageTag) {
+    for (int i = 0; i < MESSAGE_TAGS_TO_STORE; i++) {
+        if (messageTag == messageTags[i]) {
+            return(true);
+        }
+    }
+    return(false);
+}
+
+int findMatchingMessageTag(uint32_t messageTag){
+    for (int i = 0; i < MESSAGE_TAGS_TO_STORE; i++) {
+        if (messageTag == messageTags[i]) {
+            return(i);
+        }
+    }
+    return(0);
 }
 
 bool isDuplicateBatch(uint32_t messageTag, uint8_t batchTag, int messageTagNum) {
@@ -262,6 +285,7 @@ bool isDuplicateAddress(const uint8_t* mac_addr) {
 
 
 void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
+    // Serial.println("Got data");
     // Serial.print("Data received from MAC: ");
     // printMacAddress(mac_addr);
     // Serial.print("Length of message: ");
@@ -270,7 +294,7 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
     uint64_t setupMessage;
     memcpy(&setupMessage, incomingData, sizeof(uint64_t));
 
-    if (len == sizeof(uint64_t) /*&& setupMessage == SETUP_COMMAND*/) { //Check for setup message
+    if (len == sizeof(uint64_t) /*&& setupMessage == SETUP_COMMAND*/&& scanMode) { //Check for setup message
         Serial.println("Received scan response message");
         if(macAddressBookmark<=MAC_ADDRESSES_TO_STORE){
             if(!isDuplicateAddress(mac_addr)){
@@ -289,21 +313,28 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
         else{Serial.println("Out of storage, cannot add new peer");}
     }
 
-    if(len > 5 && len < 251 && !scanMode){
+    if(len > 5 && len < 251 && !scanMode && initialised){
         MacAddress receivedAddress;
-        memcpy(&receivedAddress.address, incomingData, 6);
+        memcpy(&receivedAddress, incomingData, 6);
         uint32_t receivedTag;
-        memcpy(&receivedTag, incomingData + 6, 4);
+        memcpy(&receivedTag, incomingData + 8, 4);
         uint8_t receivedBatchTag;
-        memcpy(&receivedBatchTag, incomingData + 10, 1);
+        memcpy(&receivedBatchTag, incomingData + 12, 1);
+        // Serial.print("Received Batch Tag: ");
+        // Serial.println(receivedBatchTag);
         // Serial.printf("Mesh transmission received, tag: %u\n", receivedTag);
 
         if (!isDuplicateMessage(receivedTag, receivedBatchTag)) {
-            messageTags[messageTagBookmark] = receivedTag;
-            messageTagBookmark = (messageTagBookmark + 1) % MESSAGE_TAGS_TO_STORE;
+            if(!isDuplicateMessageTag(receivedTag)){
+                messageTags[messageTagBookmark] = receivedTag;
+                messageTagBookmark = (messageTagBookmark + 1) % MESSAGE_TAGS_TO_STORE;
+            }
+            // else{
+
+            // }
             size_t receivedDataLength = len-11;
             uint8_t receivedData[receivedDataLength] = {0};
-            memcpy(receivedData, incomingData+11, (receivedDataLength));
+            memcpy(receivedData, incomingData+16, (receivedDataLength));
              if(!isDuplicateAddress(mac_addr)){
                 if(macAddressBookmark<MAC_ADDRESSES_TO_STORE){
                 memcpy((void*)&macAddresses[macAddressBookmark], (void*)&receivedAddress, 6);
@@ -314,19 +345,25 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
                 Serial.println("Blocked non-peer message");
             }
             else{
-                Serial.println("Got a real message");
-                Serial.print("macAddressBookmark:  ");
-                Serial.println(macAddressBookmark);
+                // Serial.println("Got a real message");
+                // Serial.print("macAddressBookmark:  ");
+                // Serial.println(macAddressBookmark);
                 for (int i = 0; i<macAddressBookmark; i++) {
-                    Serial.println("Entered loop");
+                    // Serial.println("Entered loop");
                     if (memcmp((const void*)&macAddresses[i], (const void*)&receivedAddress, 6) == 0) {
-                        memcpy((void*)&messageData[i][messageDataBookmark[i]], receivedData + messageDataSubBookmark[i], receivedDataLength);
+                        // Serial.print("Sub-boomark before: ");
+                        // Serial.println(messageDataSubBookmark[i]);
+                        memcpy((void*)&(messageData[i][messageDataBookmark[i]][messageDataSubBookmark[i]]), receivedData, receivedDataLength);
                         uint16_t previousValue = messageDataSubBookmark[i];
-                        messageDataSubBookmark[i] = (messageDataSubBookmark[i] + receivedDataLength) % (DATA_SIZE-1);
-                        for(int j = 0; j<sizeof(receivedData); j++){
-                        Serial.print(messageData[i][messageDataBookmark[i]][j]);}
-                        // if(messageDataSubBookmark[i] < previousValue){
-                        // messageDataBookmark[i] = (messageDataBookmark[i] + 1) % MESSAGES_TO_STORE;}
+                        messageDataSubBookmark[i] = (messageDataSubBookmark[i] + receivedDataLength) % (DATA_SIZE);
+                        // Serial.print("Sub-bookmark after: ");
+                        // Serial.println(messageDataSubBookmark[i]);
+                        // for(int j = messageDataSubBookmark[i]; j<sizeof(receivedData); j++){
+                        // Serial.print(messageData[i][messageDataBookmark[i]][j]);}
+                        if(messageDataSubBookmark[i] < previousValue){
+                        // messageDataToBeWiped[i][messageDataBookmark[i]] = true;
+                        memset((void*)(messageData[i][messageDataBookmark[i]]), 0, sizeof(messageData[i][messageDataBookmark[i]]));
+                        }
                     }
                     else{
                         Serial.println("Error locating mac address (in data receipt area)");
@@ -339,9 +376,18 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
                         for(int k = 0; k<6; k++){
                             Serial.print(macAddresses[i].address[k]);
                         }    
-                        
+                        Serial.println();
                     }
                 }
+                // Serial.println();
+                // Serial.println();
+                // Serial.print("Arary so far:  ");
+                // for(int j = 0; j<DATA_SIZE; j++){
+                //     Serial.print(messageData[0][0][j]);
+                //     Serial.print(" ");
+                // }
+                // Serial.println();
+                // Serial.println();
                 // Serial.print("Received Data: ");
                 //     for(int j = 0; j<sizeof(receivedData); j++){
                 //         Serial.print(receivedData[j]);}
@@ -369,6 +415,7 @@ void handleRestart() {
 }
 
 void handleScan() {
+    initialised = false;
     Serial.println("Scanning for trusted peers...");
     scanMode = true;
     scanEndTime = millis() + SCAN_DURATION;
@@ -396,6 +443,7 @@ void handleScan() {
 
     scanMode = false;
     Serial.println("Scan complete.");
+    initialised = true;
 }
 
 // void onRequest(AsyncWebServerRequest* request) {
@@ -443,12 +491,12 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
         memcpy(responseBuffer + sizeof(messageData), macAddresses, sizeof(macAddresses));
         client->binary(responseBuffer, totalSize);
 
-        Serial.print("responseBuffer: ");
-        for (int i = 0; i < 2500; i++) {
-            Serial.print(responseBuffer[i]);  // Print each byte as a number
-            Serial.print(" ");  // Add a space between numbers for readability
-        }
-        Serial.println();
+        // Serial.print("responseBuffer: ");
+        // for (int i = 0; i < 2500; i++) {
+        //     Serial.print(responseBuffer[i]);  // Print each byte as a number
+        //     Serial.print(" ");  // Add a space between numbers for readability
+        // }
+        // Serial.println();
             }
     }
 }
