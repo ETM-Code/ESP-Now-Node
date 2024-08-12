@@ -13,7 +13,7 @@
 bool initialised = false;
 #define DATA_SIZE 6400
 #define TRANSMISSION_SIZE 250 //Maximum bytes transmissable by ESP_Now in a single batch
-#define USABLE_TRANSMISSION_SPACE 239 //Allocate 4 bytes for message identifier, 1 for batch identifier, 6 for mac address
+#define USABLE_TRANSMISSION_SPACE 234 //Allocate 4 bytes for message identifier, 1 for batch identifier, 6 for mac address
 #define TRANSMISSION_THRESHOLD 3
 
 int divideAndRoundUp(int numerator, int denominator) {
@@ -33,8 +33,8 @@ const int numberOfTransmissions = divideAndRoundUp(DATA_SIZE, USABLE_TRANSMISSIO
 
 
 
-#define NO_OF_BATCH_TAGS 27
-#define MESSAGES_TO_STORE 2
+#define NO_OF_BATCH_TAGS 28
+#define MESSAGES_TO_STORE 3
 #define BATCH_SIZE 234
 
 // WiFi Credentials
@@ -215,7 +215,7 @@ bool addPeer(const uint8_t* mac_addr) {
 int findMacAddress(MacAddress receivedAddress){
     Serial.print("Mac Address Bookmark:  ");
     Serial.println(macAddressBookmark);
-    for (int i = 0; i<MAC_ADDRESSES_TO_STORE; i++) {
+    for (int i = 0; i<macAddressBookmark; i++) {
         // Serial.println("Local Mac Address:  ");
         // printMacAddress((uint8_t*)&macAddresses[i]);
         // Serial.println("Received Mac Address:  ");
@@ -331,6 +331,7 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
                     Serial.println();}
                 else{
                     Serial.println("Couldn't find batch tag");
+                    Serial.print("Batch Tag:  "); Serial.println(receivedBatchTag);
                     if(receivedBatchTag<=NO_OF_BATCH_TAGS){
                         Serial.print("Inner Count:  ");
                         innerCount++;
@@ -341,9 +342,16 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
                             Serial.print(", ");
                         }
                         Serial.println();
+                        if(receivedBatchTag*BATCH_SIZE+receivedDataLength-2<=sizeof(messageData[addressIndex][messageTagIndex])){
                         memcpy((void*)&(messageData[addressIndex][messageTagIndex].data[receivedBatchTag*BATCH_SIZE]), receivedData, receivedDataLength);
                         batchTagsBookmark[addressIndex][messageTagIndex]++;
                         if(batchTagsBookmark[addressIndex][messageTagIndex]>=NO_OF_BATCH_TAGS){
+                            batchTagsBookmark[addressIndex][messageTagIndex]=0;
+                            messageData[addressIndex][messageTagIndex].notSent = true;
+                        }
+                        }
+                        else{
+                            Serial.println("Message didn't fit");
                             batchTagsBookmark[addressIndex][messageTagIndex]=0;
                             messageData[addressIndex][messageTagIndex].notSent = true;
                         }
@@ -355,13 +363,13 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
             else{
                 Serial.println("Couldn't find message tag");
                 Serial.print("Inner Count:  ");
-                        innerCount++;
-                        Serial.println(innerCount);
+                innerCount++;
+                Serial.println(innerCount);
                 messageTags[addressIndex][messageTagBookmark[addressIndex]] = receivedTag;
                 batchTagsBookmark[addressIndex][messageTagBookmark[addressIndex]] = 0;
                 memset(batchTags[addressIndex][messageTagBookmark[addressIndex]], 0, NO_OF_BATCH_TAGS);
                 memset((void*)&messageData[addressIndex][messageTagBookmark[addressIndex]], 0, MESSAGES_TO_STORE);
-                messageTagBookmark[addressIndex]++;
+                messageTagBookmark[addressIndex] = (messageTagBookmark[addressIndex]+1) % MESSAGES_TO_STORE;
             }
         }
         else{ //Uncomment if you want to allow any source of transmission
