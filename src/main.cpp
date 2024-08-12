@@ -3,15 +3,42 @@
 #include <cstdint>
 #include <array>
 #include <string.h>
+#include "LSM6DSOXSensor.h"
+#include <Adafruit_Sensor.h>
+#include <Adafruit_ADXL375.h>
+#include <cmath>
+
+LSM6DSOXSensor lsm6dsoxSensor = LSM6DSOXSensor(&Wire, LSM6DSOX_I2C_ADD_L);
 
 // Constants
-#define SCAN_DURATION 10000
+
+// Define the LED pins
+#define LED_PIN1 5
+#define LED_PIN2 6
+
+// Define the I2C pins
+#define SCL_PIN 1
+#define SDA_PIN 0
+
+// Define ADXL375 SPI pins
+#define ADXL375_SCK 13
+#define ADXL375_MISO 12
+#define ADXL375_MOSI 11
+#define ADXL375_CS 10
+
+// Define some random nonsense that I'm too tired to explain
+
+#define SCAN_DURATION 4000
 #define NODE_TRANSMISSION_INTERVAL_MIN 5000
 #define NODE_TRANSMISSION_INTERVAL_MAX 10000
 
-#define DATA_SIZE 6000
+#define DATA_SIZE 6400
+#define ACCEL_DATA_SIZE 3200
+#define GYRO_DATA_SIZE 6670
+#define TRANSMISSION_THRESHOLD 6
+#define NUMBER_OF_SENSORS 6
 #define TRANSMISSION_SIZE 250 //Maximum bytes transmissable by ESP_Now in a single batch
-#define USABLE_TRANSMISSION_SPACE 239 //Allocate 4 bytes for message identifier, 1 for batch identifier, 6 for mac address
+#define USABLE_TRANSMISSION_SPACE 234 //250-8-4-4=234
 
 int divideAndRoundUp(int numerator, int denominator) {
     if (denominator == 0) {
@@ -42,63 +69,136 @@ bool setupReceived = false;
 bool scanMode = false;
 unsigned long scanEndTime = 0;
 
-alignas(4) uint8_t AP_Address[6];
+ uint8_t AP_Address[6];
 
 uint32_t setupMessageFirst32Bits;
 uint32_t setupMessageSecond32Bits;
 
 typedef struct {
-    alignas(4) uint8_t address[6];
+     uint8_t address[6];
 } MacAddress;
 
-alignas(4) MacAddress macAddresses[15] = {0};
-alignas(4) uint8_t numSavedAddresses = 0;
-alignas(4) uint8_t macArrayNumber = 0;
+ MacAddress macAddresses[15] = {0};
+ uint8_t numSavedAddresses = 0;
+ uint8_t macArrayNumber = 0;
 
-alignas(4) uint8_t messageAddresses[15][NO_OF_BATCH_TAGS][6];
-alignas(4) uint8_t messageData[15][NO_OF_BATCH_TAGS][250];
-alignas(4) uint32_t messageTags[MESSAGE_TAGS_TO_STORE] = {0};
-alignas(4) uint8_t messageTagBookmark = 0;
-alignas(4) uint8_t batchTags[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS] = {0};
-alignas(4) uint8_t batchTagsBookmark[MESSAGE_TAGS_TO_STORE] = {0};
-alignas(4) uint8_t batchData[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS][USABLE_TRANSMISSION_SPACE] = {0};
-alignas(4) uint8_t batchDataBookmark = 0;
-alignas(4) uint8_t currentPersonalBatchTag = 0;
-alignas(4) MacAddress myMacAddress;
+ uint8_t messageAddresses[15][NO_OF_BATCH_TAGS][6];
+ uint8_t messageData[15][NO_OF_BATCH_TAGS][250];
+ uint32_t messageTags[MESSAGE_TAGS_TO_STORE] = {0};
+ uint8_t messageTagBookmark = 0;
+ uint8_t batchTags[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS] = {0};
+ uint8_t batchTagsBookmark[MESSAGE_TAGS_TO_STORE] = {0};
+ uint8_t batchData[MESSAGE_TAGS_TO_STORE][NO_OF_BATCH_TAGS][USABLE_TRANSMISSION_SPACE] = {0};
+ uint8_t batchDataBookmark = 0;
+ uint8_t currentPersonalBatchTag = 0;
+ MacAddress myMacAddress;
+
+float prevAccelX = 0;
+
+//  uint8_t buffer[6+4+1+USABLE_TRANSMISSION_SPACE] = {0};
 
 unsigned long lastDataSend = 0;
-alignas(4) uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+ uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 //Defining Message Types
 typedef struct {
-    alignas(4) MacAddress macAddress;
+     MacAddress macAddress;
     uint32_t messageTag;
     uint8_t batchTag;
-    alignas(4) uint8_t data[USABLE_TRANSMISSION_SPACE];
+     uint8_t data[USABLE_TRANSMISSION_SPACE];
 } opTransmission;
 const size_t opTransmissionSize = sizeof(opTransmission);
 
 typedef struct {
     uint32_t code;
-    alignas(4) uint8_t routerAddress[6];
+     uint8_t routerAddress[6];
 } scanTransmission;
 const size_t scanTransmissionSize = sizeof(scanTransmission);
 
 unsigned long lastScanBroadcastTime = 0;
 
-alignas(4) uint8_t data[DATA_SIZE] = {0}; //declared for send-random-data function to overcome stack allocation issues
+//  uint8_t data[DATA_SIZE] = {0}; //declared for send-random-data function to overcome stack allocation issues
+
+
+
+
+typedef struct {
+    alignas(4) MacAddress macAddress;
+    alignas(4) uint32_t messageTag;
+    alignas(4) uint8_t batchTag;
+    alignas(4) uint8_t accelData [USABLE_TRANSMISSION_SPACE/2];
+    alignas(4) uint8_t gyroData [USABLE_TRANSMISSION_SPACE/2];
+} sensorTransmission;
+
+
+//Sensor Data
+uint8_t accelDataFull [ACCEL_DATA_SIZE];
+Adafruit_ADXL375 accel = Adafruit_ADXL375(12345);
+float gyroDataFull [GYRO_DATA_SIZE];
+uint8_t gyroDataSquashed [ACCEL_DATA_SIZE];
+sensorTransmission dataStore = {0};
+// bool shouldTransmit = true;
+// ^ Sensor Data
+
+int sensorDataBookmark = 0;
 
 void startScanMode();
 void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len);
-void sendRandomData();
+// void sendRandomData();
 bool addPeer(const uint8_t *);
-void generateRandomData(uint8_t* data, size_t length);
-void sendMessageToPeers(const uint8_t *message, size_t len);
+// void generateRandomData(uint8_t* data, size_t length);
+// void sendMessageToPeers(const uint8_t *message, size_t len);
 bool isDuplicateMessage(uint32_t messageTag, uint8_t batchTag);
 bool isDuplicateBatch(uint32_t messageTag, uint8_t batchTag, int messageTagNum);
 bool isDuplicateAddress(const uint8_t* mac_addr);
 void printMacAddress(const uint8_t* mac_addr);
 void addInitialPeers();
+void gatherSensorData();
+void sendSensorData();
+
+
+
+const int N = 6;  // Order of the filter
+
+// Filter coefficients
+const float b[N + 1] = {0.70397933f, 4.22387596f, 10.5596899f, 14.07958653f, 10.5596899f, 4.22387596f, 0.70397933f};
+const float a[N + 1] = {1.0f, 5.40400985f, 12.21077247f, 14.76856606f, 10.08630847f, 3.68957553f, 0.56510196f};
+
+
+// Function to apply the Chebyshev Type I filter
+void applyChebyshevFilter(const float input[GYRO_DATA_SIZE], uint8_t filtered_output[ACCEL_DATA_SIZE]) {
+    float x[N + 1] = {};  // Past input values
+    float y[N + 1] = {};  // Past output values
+
+    for (int n = 0; n < ACCEL_DATA_SIZE; ++n) {
+        // Shift the values in x and y arrays
+        for (int i = N; i > 0; --i) {
+            x[i] = x[i - 1];
+            y[i] = y[i - 1];
+        }
+
+        // Assign the current input value
+        x[0] = input[n];
+
+        // Calculate the current output value using the difference equation
+        float output_value = b[0] * x[0];
+        for (int i = 1; i <= N; ++i) {
+            output_value += b[i] * x[i] - a[i] * y[i];
+        }
+        y[0] = output_value;
+
+        // Store the output value
+        filtered_output[n] = y[0];
+    }
+}
+
+// Function to downsample the filtered output to 3200 elements
+void downsample(const float filtered_input[GYRO_DATA_SIZE], float output[ACCEL_DATA_SIZE]) {
+    const float factor = static_cast<float>(GYRO_DATA_SIZE) / ACCEL_DATA_SIZE;
+    for (int i = 0; i < ACCEL_DATA_SIZE; ++i) {
+        output[i] = filtered_input[static_cast<int>(i * factor)];
+    }
+}
 
 
 void stringToMacAddress(String macStr, MacAddress* mac) {
@@ -152,10 +252,59 @@ void removeAllPeers() {
     addInitialPeers(); // Re-add initial peers after reinitializing
 }
 
+bool checkForSpikes(){
+    // Serial.println("Checking for spikes...");
+    for(int i = 0; i<ACCEL_DATA_SIZE; i++){
+        if(accelDataFull[i]>=TRANSMISSION_THRESHOLD){
+            return true;
+        }
+    }
+    return false;
+}
+
 void setup() {
     Serial.begin(115200);
-    delay(5000);
+    delay(1000);
     WiFi.mode(WIFI_AP_STA);
+
+    Wire.begin(SDA_PIN, SCL_PIN);
+
+    // Default clock is 100kHz. LSM6DSOX also supports 400kHz, let's use it
+    Wire.setClock(100000);
+
+    // Init the sensor
+    lsm6dsoxSensor.begin();
+
+    // Enable accelerometer and gyroscope, and check success
+    if (lsm6dsoxSensor.Enable_G() == LSM6DSOX_OK) {
+        Serial.println("Success enabling gyro");
+    } else {
+        Serial.println("Error enabling gyro");
+    }
+
+    // Read ID of device and check that it is correct
+    uint8_t id;
+    lsm6dsoxSensor.ReadID(&id);
+    if (id != LSM6DSOX_ID) {
+        Serial.println("Wrong ID for LSM6DSOX sensor. Check that device is plugged");
+    } else {
+        Serial.println("Receviced correct ID for LSM6DSOX sensor");
+    }
+
+    // Set gyroscope scale at +- 125 degres per second. Available values are +- 125, 250, 500, 1000, 2000 dps
+    lsm6dsoxSensor.Set_G_FS(2000);
+
+    // Set Gyroscope sample rate to 208 Hz. Available values are +- 12.0, 26.0, 52.0, 104.0, 208.0, 416.0, 833.0, 1667.0, 3333.0, 6667.0 Hz
+    lsm6dsoxSensor.Set_G_ODR(6667.0f);
+    if(!accel.begin())
+    {
+        /* There was a problem detecting the ADXL375 ... check your connections */
+        Serial.println("Ooops, no ADXL375 detected ... Check your wiring!");
+        while(1);
+    }
+
+    adxl3xx_dataRate_t accelDataRate = ADXL343_DATARATE_3200_HZ; 
+    accel.setDataRate(accelDataRate);
     
     // Initialize ESP-NOW
     if (esp_now_init() != ESP_OK) {
@@ -199,10 +348,23 @@ void loop() {
     }
 
     if (!scanMode && setupReceived) { //Switch to generate random data and add to buffer
+        gatherSensorData();
         esp_now_del_peer(broadcastAddress);
-        if (currentMillis - lastDataSend >= NODE_TRANSMISSION_INTERVAL_MIN + (esp_random() % (NODE_TRANSMISSION_INTERVAL_MAX - NODE_TRANSMISSION_INTERVAL_MIN))) {
-            sendRandomData();
-            lastDataSend = currentMillis;
+        if (checkForSpikes()) {
+            // Serial.println();
+            // Serial.println();
+            // Serial.println();
+            // Serial.println();
+            // Serial.println();
+            // Serial.println();
+            // Serial.println("Should be sending...");
+            // Serial.println();
+            // Serial.println();
+            // Serial.println();
+            // Serial.println();
+            // Serial.println();
+            // Serial.println();
+            sendSensorData();
         }
     }
 
@@ -247,12 +409,21 @@ void startScanMode() {
     scanMode = true;
 }
 
-void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
+bool on = false;
 
+void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
+    Serial.println("Got some data");
+    if(on){
+    digitalWrite(LED_PIN2, LOW);
+    on = false;
+    }
+    else{digitalWrite(LED_PIN2, HIGH);
+    on = true;
+    }
     uint64_t setupMessage;
     memcpy(&setupMessage, data, sizeof(uint64_t));
 
-    if (len == sizeof(uint64_t) && setupMessage == SETUP_COMMAND && !scanMode) { //Check for setup message
+    if (len == sizeof(uint64_t) /*&& setupMessage == SETUP_COMMAND*/ && !scanMode) { //Check for setup message
         Serial.println("AP Setup Message Received");
         startScanMode();
         setupMessageFirst32Bits = (uint32_t)(setupMessage >> 32);
@@ -372,74 +543,117 @@ void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
             Serial.println("Duplicate message, discarding.");
         }
     }
-    delay(50);
+    // delay(50);
 }
 
-void sendRandomData() {
-    generateRandomData(data, DATA_SIZE);
-    uint32_t messageIdentifier = esp_random();
+bool oneOn = false; 
 
-    Serial.print("Sending random data to AP and peers. Time: ");
-    Serial.println(millis());
-    for (int i = 0; i < numberOfTransmissions; i++) {
-        opTransmission message;
-        message.macAddress = myMacAddress;
-        message.messageTag = messageIdentifier;
-        message.batchTag = i;
-        if (i >= (numberOfTransmissions - 1)) {
-            for (int j = 0; j < (DATA_SIZE % USABLE_TRANSMISSION_SPACE); j++) { //modify to handle cases where there's not a full batch, will be once per transmission, minimum
-                message.data[j] = data[(i * USABLE_TRANSMISSION_SPACE) + j];
-            }
-        } else {
-            for (int j = 0; j < USABLE_TRANSMISSION_SPACE; j++) { //modify to handle cases where there's not a full batch, will be once per transmission, minimum
-                message.data[j] = data[(i * USABLE_TRANSMISSION_SPACE) + j];
-            }
+void gatherSensorData() {
+    uint8_t gyroStatus;
+    lsm6dsoxSensor.Get_G_DRDY_Status(&gyroStatus);
+    if (gyroStatus == 1) { // Status == 1 means a new data is available
+        int32_t tempGyroData[3];  // Temporary array to store the gyroscope data as int32_t
+
+        // Retrieve the gyroscope data from the LSM6DSOX sensor
+        lsm6dsoxSensor.Get_G_Axes(tempGyroData);
+
+        for(int i=0; i<3; i++){
+            tempGyroData[i] = tempGyroData[i] * (PI / 180.0);
         }
-        // sendESPNowMessage(AP_Address, (const uint8_t *)&message, opTransmissionSize);
-        esp_now_send(0, (const uint8_t *)message.data, sizeof(message.data));
-        // sendMessageToPeers((const uint8_t *)&message, opTransmissionSize);
-        delay(50);
-    }
-}
-
-void generateRandomData(uint8_t* data, size_t length) {
-    for (size_t i = 0; i < length; i++) {
-        float rand_val = (float)esp_random() / UINT32_MAX;
-        if (rand_val < 0.99) {
-            data[i] = esp_random() % 4; // 0 to 3
-        } else {
-            data[i] = 10 + esp_random() % 141; // 10 to 150
-        }
-    }
-}
-
-void sendMessageToPeers(const uint8_t *message, size_t len) {
-    esp_now_peer_num_t peerCount;
-    if (esp_now_get_peer_num(&peerCount) != ESP_OK) {
-        Serial.println("Failed to get the number of ESP-NOW peers.");
-        return;
-    }
-
-    if (peerCount.total_num == 0) {
-        Serial.println("No peers to send messages to.");
-        return;
-    }
-
-    Serial.println("Sending message to peers:");
     
-    for (int i = 0; i < numSavedAddresses; i++) {
-        Serial.print("Sending to peer: ");
-        const uint8_t *pointedMacAddress  =  (const uint8_t *)&macAddresses[i];
-        printMacAddress(pointedMacAddress);
-        esp_err_t result = esp_now_send(pointedMacAddress, message, len);
-            if (result == ESP_OK) {
-                Serial.println("P. Message sent successfully");
-            } else {
-                Serial.print("P. Error sending message: ");
-                Serial.println(result);
-            }
+        int32_t tempGyroDataAbsSquashed = (sqrt(tempGyroData[1]*tempGyroData[1]+tempGyroData[2]*tempGyroData[2]+tempGyroData[3]*tempGyroData[3]))/100; //Squashes the gyro data into a form more convenient for uint8_t conversion
+    
+
+        // Serial.println("Gyro values: ");
+        // Downcast and store the gyroscope data as uint8_t
+            gyroDataFull[sensorDataBookmark] = static_cast<uint8_t>(tempGyroDataAbsSquashed);
+            // Note: static_cast<uint8_t>(tempGyroData[i] & 0xFF) only stores the least significant byte of each int32_t value -> Make it into something better irl
+            // Serial.print(dataStore.gyroData[sensorDataBookmark][i]);
+            // Serial.print(", ");
+        }
+    
+    // Serial.println();
+    sensors_event_t event;
+    accel.getEvent(&event);
+    float aX = event.acceleration.x/9.81;
+    if(aX!=prevAccelX){
+        // Serial.print("New accelerometer data:  ");
+        float aY = event.acceleration.y/9.81;
+        float aZ = event.acceleration.z/9.81;
+        accelDataFull[sensorDataBookmark] = (uint8_t)sqrt(aX*aX+aY*aY+aZ*aZ);
+        // Serial.println(accelDataFull[sensorDataBookmark]);
     }
+
+
+    // Serial.println("Acceleration Values: ");
+    // for (int i = 0; i < 3; i++) {
+    //         Serial.print(dataStore.accelData[sensorDataBookmark][i]);
+    //         Serial.print(", ");
+    //     }
+    sensorDataBookmark = (sensorDataBookmark+1) % sizeof(dataStore.accelData);
+    // Serial.println();
 }
+unsigned long timeOfLastTransmission = 0;
+void sendSensorData(){
+    // if(millis()-timeOfLastTransmission>1000){
+        timeOfLastTransmission=millis();
+    Serial.println("Started sending function");
+    size_t bytesToCopy = sizeof(dataStore.accelData);  // 117 bytes
+    dataStore.messageTag = esp_random();
+    
+    applyChebyshevFilter(gyroDataFull, gyroDataSquashed);
+    unsigned long timeOfLastBatch = 0;
+    for (int i = 0; i < numberOfTransmissions; i++) {
+        // while(millis()-timeOfLastBatch<500){}
+        // timeOfLastBatch=millis();
+        // Serial.println("looping");
+        // Serial.println("Entered first for loop");
+        dataStore.macAddress = myMacAddress;
+        dataStore.batchTag = i;
+
+        // memcpy(dataStore.accelData, accelDataFull + i * bytesToCopy, bytesToCopy);
+        // memcpy(dataStore.gyroData, gyroDataFull + i * bytesToCopy, bytesToCopy);
+
+        // Serial.println("Entered 2nd For loop");
+        if(i*(USABLE_TRANSMISSION_SPACE/2)<=sizeof(accelDataFull)){
+            // Serial.println("Where we're meant to be");
+            memcpy((void*)&dataStore.accelData, (void*)&accelDataFull[i * (USABLE_TRANSMISSION_SPACE/2)], (USABLE_TRANSMISSION_SPACE/2));
+            memcpy((void*)&dataStore.gyroData, (void*)&gyroDataSquashed[(i * (USABLE_TRANSMISSION_SPACE/2))+(USABLE_TRANSMISSION_SPACE/2)], (USABLE_TRANSMISSION_SPACE/2));
+        }
+        else{
+            // Serial.println("Not where we're meant to be");
+            size_t copySpace = sizeof(accelDataFull)-((i-1)*USABLE_TRANSMISSION_SPACE);
+            memcpy((void*)&dataStore.accelData, (void*)&accelDataFull[i * (USABLE_TRANSMISSION_SPACE/2)], copySpace/2);
+            memcpy((void*)&dataStore.gyroData, (void*)&gyroDataSquashed[(i * (USABLE_TRANSMISSION_SPACE/2))+(copySpace/2)], copySpace/2);
+        }
+        // Serial.println("Attempting to send");
+        esp_now_send(0, (const uint8_t *)&dataStore, USABLE_TRANSMISSION_SPACE);
+        // uint8_t weirdArray[sizeof(dataStore)] = {0};
+        // memcpy(weirdArray, (const uint8_t *)&dataStore+11, sizeof(dataStore));
+        // Serial.print("Data we sent:  ");
+        // for(int i=0; i<USABLE_TRANSMISSION_SPACE; i++){
+        //     Serial.print(weirdArray[i]);
+        //     Serial.print(", ");
+        // }
+        // Serial.println();
+
+    }
+
+    Serial.println("Exited Loop");
+    memset(accelDataFull, 0, ACCEL_DATA_SIZE);
+    memset(gyroDataFull, 0, GYRO_DATA_SIZE);
+        if(oneOn){
+        digitalWrite(LED_PIN1, LOW);
+        oneOn = false;
+        }
+        else{digitalWrite(LED_PIN1, HIGH);
+        oneOn = true;
+        }
+    Serial.println("Finished with function");
+    // }
+    
+}
+
 
 bool isDuplicateMessage(uint32_t messageTag, uint8_t batchTag) {
     for (int i = 0; i < MESSAGE_TAGS_TO_STORE; i++) {
@@ -482,6 +696,7 @@ bool isDuplicateAddress(const uint8_t* mac_addr) {
 }
 
 bool addPeer(const uint8_t* mac_addr) {
+    esp_now_del_peer(mac_addr);
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, mac_addr, 6);
     peerInfo.channel = WIFI_CHANNEL;
