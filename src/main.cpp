@@ -14,7 +14,7 @@ bool initialised = false;
 #define DATA_SIZE 6400
 #define TRANSMISSION_SIZE 250 //Maximum bytes transmissable by ESP_Now in a single batch
 #define USABLE_TRANSMISSION_SPACE 234 //Allocate 4 bytes for message identifier, 1 for batch identifier, 6 for mac address
-#define TRANSMISSION_THRESHOLD 3
+#define TRANSMISSION_THRESHOLD 10
 
 int divideAndRoundUp(int numerator, int denominator) {
     if (denominator == 0) {
