@@ -10,6 +10,7 @@
             "includePath": [
                 "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/include",
                 "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/src",
+                "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/.pio/libdeps/AP/FastCRC",
                 "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/.pio/libdeps/AP/ESPAsyncWebServer-esphome/src",
                 "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                 "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/.pio/libdeps/AP/AsyncTCP-esphome/src",
@@ -249,6 +250,7 @@
                 "path": [
                     "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/include",
                     "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/src",
+                    "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/.pio/libdeps/AP/FastCRC",
                     "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/.pio/libdeps/AP/ESPAsyncWebServer-esphome/src",
                     "/Users/eoghancollins/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                     "/Users/eoghancollins/PlatformIO/Projects/MeshPointAP/.pio/libdeps/AP/AsyncTCP-esphome/src",

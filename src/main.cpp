@@ -3,6 +3,9 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <cstring>
+#include <FastCRC.h>
+
+FastCRC32 CRC32;
 
 // Definitions
 
@@ -53,7 +56,7 @@ typedef struct {
 alignas(4) uint8_t macAddressBookmark = 0;
 
 size_t totalSize = (DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE)+(MAC_ADDRESSES_TO_STORE*8);
-uint8_t responseBuffer[DATA_SIZE+sizeof(MacAddress)+sizeof(bool)];
+uint8_t responseBuffer[DATA_SIZE+sizeof(MacAddress)+sizeof(bool)+sizeof(uint32_t)];
 
 typedef struct {
     MacAddress address;
@@ -472,10 +475,10 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
     Serial.print("Message: ");
     Serial.println(msg);
 
-    if (msg == "restart") {
+    if (msg.indexOf("restart") != -1) {
         Serial.println("Restarting from message");
         handleRestart();
-    } else if (msg == "scan") {
+    } else if (msg.indexOf("scan") != -1) {
         handleScan();
     } else if (msg.indexOf("getData") != -1) {  // Check if "getData" is contained within msg
         Serial.println("Got request for data");
@@ -483,8 +486,11 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
             for(int messageIndex=0; messageIndex<MESSAGES_TO_STORE; messageIndex++){
                 if(messageData[addressIndex][messageIndex].notSent==true){
                     if(checkForSpikes(addressIndex, messageIndex)){
-                        memcpy(responseBuffer, (void*)&messageData[addressIndex][messageIndex], DATA_SIZE+sizeof(MacAddress)+sizeof(bool));
-                        client->binary(responseBuffer, totalSize);
+                        size_t dataSize = DATA_SIZE + sizeof(MacAddress) + sizeof(bool);
+                        memcpy(responseBuffer, (void*)&messageData[addressIndex][messageIndex], dataSize);
+                        uint32_t checksum = CRC32.crc32((uint8_t*)&messageData[addressIndex][messageIndex], dataSize);
+                        memcpy(responseBuffer + dataSize, &checksum, sizeof(checksum));
+                        client->binary(responseBuffer, dataSize+sizeof(checksum));
                         break;
                     }
                     memset((void*)&messageData[addressIndex][messageIndex], 0, sizeof(messageData));
