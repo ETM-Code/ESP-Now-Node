@@ -7,6 +7,11 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_ADXL375.h>
 #include <cmath>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include "esp_task_wdt.h"
+
+esp_err_t esp_task_wdt_init(uint32_t timeout, bool panic);
 
 LSM6DSOXSensor lsm6dsoxSensor = LSM6DSOXSensor(&Wire, LSM6DSOX_I2C_ADD_L);
 
@@ -15,6 +20,7 @@ LSM6DSOXSensor lsm6dsoxSensor = LSM6DSOXSensor(&Wire, LSM6DSOX_I2C_ADD_L);
 // Define the LED pins
 #define LED_PIN1 5
 #define LED_PIN2 6
+#define CLIENT_TIMEOUT 5
 
 // Define the I2C pins
 #define SCL_PIN 1
@@ -35,7 +41,7 @@ LSM6DSOXSensor lsm6dsoxSensor = LSM6DSOXSensor(&Wire, LSM6DSOX_I2C_ADD_L);
 #define DATA_SIZE 6400
 #define ACCEL_DATA_SIZE 3200
 #define GYRO_DATA_SIZE 6670
-#define TRANSMISSION_THRESHOLD 6
+#define TRANSMISSION_THRESHOLD 1
 #define NUMBER_OF_SENSORS 6
 #define TRANSMISSION_SIZE 250 //Maximum bytes transmissable by ESP_Now in a single batch
 #define USABLE_TRANSMISSION_SPACE 234 //250-8-4-4=234
@@ -53,12 +59,14 @@ int divideAndRoundUp(int numerator, int denominator) {
     return result;
 }
 const int numberOfTransmissions = divideAndRoundUp(DATA_SIZE, USABLE_TRANSMISSION_SPACE);
+unsigned long lastTimeTime = 0;
 
 #define SETUP_COMMAND 2069783108202043734ULL
 #define FIRST_BITS 483868772U
 #define LAST_BITS 2952687110U
 #define WIFI_CHANNEL 1
 #define SEND_INTERVAL 1000
+#define MAX_WS_CLIENTS 40
 
 #define MESSAGE_TAGS_TO_STORE 30
 #define NO_OF_BATCH_TAGS 25
@@ -92,8 +100,16 @@ typedef struct {
  uint8_t batchDataBookmark = 0;
  uint8_t currentPersonalBatchTag = 0;
  MacAddress myMacAddress;
+//  uint8_t responseBuffer[DATA_SIZE+sizeof(MacAddress)+sizeof(bool)/*+sizeof(uint32_t)*/+1000];
+
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
+ std::vector<std::pair<AsyncWebSocketClient *, unsigned long>> clients;
+
 
 float prevAccelX = 0;
+
+bool breakLoops = false;
 
 //  uint8_t buffer[6+4+1+USABLE_TRANSMISSION_SPACE] = {0};
 
@@ -102,10 +118,10 @@ unsigned long lastDataSend = 0;
 
 //Defining Message Types
 typedef struct {
-     MacAddress macAddress;
-    uint32_t messageTag;
-    uint8_t batchTag;
-     uint8_t data[USABLE_TRANSMISSION_SPACE];
+    alignas(4) MacAddress macAddress;
+    alignas(4) uint32_t messageTag;
+    alignas(4) uint8_t batchTag;
+    alignas(4) uint8_t data[USABLE_TRANSMISSION_SPACE];
 } opTransmission;
 const size_t opTransmissionSize = sizeof(opTransmission);
 
@@ -126,21 +142,24 @@ typedef struct {
     alignas(4) MacAddress macAddress;
     alignas(4) uint32_t messageTag;
     alignas(4) uint8_t batchTag;
-    alignas(4) uint8_t accelData [USABLE_TRANSMISSION_SPACE/2];
-    alignas(4) uint8_t gyroData [USABLE_TRANSMISSION_SPACE/2];
+    uint8_t accelData [USABLE_TRANSMISSION_SPACE/2];
+    uint8_t gyroData [USABLE_TRANSMISSION_SPACE/2];
 } sensorTransmission;
 
 
 //Sensor Data
-uint8_t accelDataFull [ACCEL_DATA_SIZE];
+// uint8_t accelDataFull [ACCEL_DATA_SIZE];
+float accelDataFull [ACCEL_DATA_SIZE];
 Adafruit_ADXL375 accel = Adafruit_ADXL375(12345);
 float gyroDataFull [GYRO_DATA_SIZE];
-uint8_t gyroDataSquashed [ACCEL_DATA_SIZE];
+float gyroDataSquashed [ACCEL_DATA_SIZE];
 sensorTransmission dataStore = {0};
 // bool shouldTransmit = true;
 // ^ Sensor Data
 
 int sensorDataBookmark = 0;
+int gyroDataBookmark = 0;
+int accelsDataBookmark = 0;
 
 void startScanMode();
 void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len);
@@ -156,7 +175,12 @@ void addInitialPeers();
 void gatherSensorData();
 void sendSensorData();
 
-
+// WiFi Credentials
+const char* ssid = "ESP32_Network";
+const char* password = "password123";
+IPAddress local_IP(192, 168, 4, 1);
+IPAddress gateway(192, 168, 4, 1);
+IPAddress subnet(255, 255, 255, 0);
 
 const int N = 6;  // Order of the filter
 
@@ -207,18 +231,6 @@ void stringToMacAddress(String macStr, MacAddress* mac) {
     }
 }
 
-bool sendESPNowMessage(const uint8_t *peer_addr, const uint8_t *data, size_t len) {
-    esp_err_t result = esp_now_send(peer_addr, data, sizeof(data));
-    if (result == ESP_OK) {
-        Serial.println("Message sent successfully");
-        return true;
-    } else {
-        Serial.print("Error sending message: ");
-        Serial.println(result);
-        return false;
-    }
-}
-
 void printPeerInfo() {
     esp_now_peer_num_t peerCount;
     if (esp_now_get_peer_num(&peerCount) == ESP_OK) {
@@ -262,13 +274,27 @@ bool checkForSpikes(){
     return false;
 }
 
+void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventType type, void * arg, uint8_t *data, size_t len);
+
+void initWebSocket() {
+    ws.onEvent(onWsEvent);
+    server.addHandler(&ws);
+}
+
+
 void setup() {
+    esp_task_wdt_init(100, true);
     Serial.begin(115200);
     delay(1000);
     WiFi.mode(WIFI_AP_STA);
-
+    Serial.println(WiFi.macAddress());
     Wire.begin(SDA_PIN, SCL_PIN);
 
+    if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
+        Serial.println("AP Config Failed");
+    }
+    WiFi.softAP(ssid, password);
+    WiFi.setSleep(false);
     // Default clock is 100kHz. LSM6DSOX also supports 400kHz, let's use it
     Wire.setClock(100000);
 
@@ -312,12 +338,14 @@ void setup() {
         return;
     }
 
-    esp_now_register_recv_cb(onDataRecv);
+    
+    initWebSocket();
+    server.begin();
 
-    Serial.println("Setup complete, waiting for setup message...");
     addInitialPeers();
 
     stringToMacAddress(WiFi.macAddress(), &myMacAddress);
+    Serial.println("Setup Complete");
 }
 
 void addInitialPeers() {
@@ -340,32 +368,38 @@ void addInitialPeers() {
 
 void loop() {
     unsigned long currentMillis = millis(); //Used often, so defining is good
-
-    if (scanMode && currentMillis > scanEndTime) { //Good
-        scanMode = false;
-        Serial.println("Scan mode ended.");
-        printPeerInfo();
-    }
+    gatherSensorData();
 
     if (!scanMode && setupReceived) { //Switch to generate random data and add to buffer
         gatherSensorData();
         esp_now_del_peer(broadcastAddress);
-        if (checkForSpikes()) {
-            // Serial.println();
-            // Serial.println();
-            // Serial.println();
-            // Serial.println();
-            // Serial.println();
-            // Serial.println();
-            // Serial.println("Should be sending...");
-            // Serial.println();
-            // Serial.println();
-            // Serial.println();
-            // Serial.println();
-            // Serial.println();
-            // Serial.println();
-            sendSensorData();
-        }
+        // if (checkForSpikes()) {
+        //     // Serial.println();
+        //     // Serial.println();
+        //     // Serial.println();
+        //     // Serial.println();
+        //     // Serial.println();
+        //     // Serial.println();
+        //     // Serial.println("Should be sending...");
+        //     // Serial.println();
+        //     // Serial.println();
+        //     // Serial.println();
+        //     // Serial.println();
+        //     // Serial.println();
+        //     // Serial.println();
+        //     Serial.print("Accelerations:  ");
+        //     for(int i=0; i<sizeof(accelDataFull-1); i++){
+        //         Serial.print(accelDataFull[i]);
+        //         Serial.print(", ");
+        //     }
+        //     Serial.println();
+        //     Serial.print("Rotations:  ");
+        //     for(int i=0; i<sizeof(accelDataFull-1); i++){
+        //         Serial.print(gyroDataSquashed[i]);
+        //         Serial.print(", ");
+        //     }
+        //     Serial.println();
+        // }
     }
 
     // If in scan mode, broadcast scan messages periodically
@@ -403,150 +437,6 @@ void loop() {
 
 }
 
-void startScanMode() {
-    scanEndTime = millis() + SCAN_DURATION;
-    Serial.println("Starting scan mode...");
-    scanMode = true;
-}
-
-bool on = false;
-
-void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
-    Serial.println("Got some data");
-    if(on){
-    digitalWrite(LED_PIN2, LOW);
-    on = false;
-    }
-    else{digitalWrite(LED_PIN2, HIGH);
-    on = true;
-    }
-    uint64_t setupMessage;
-    memcpy(&setupMessage, data, sizeof(uint64_t));
-
-    if (len == sizeof(uint64_t) /*&& setupMessage == SETUP_COMMAND*/ && !scanMode) { //Check for setup message
-        Serial.println("AP Setup Message Received");
-        startScanMode();
-        setupMessageFirst32Bits = (uint32_t)(setupMessage >> 32);
-        setupMessageSecond32Bits = (uint32_t)(setupMessage & 0xFFFFFFFF);
-        memcpy(AP_Address, mac_addr, 6);
-        setupReceived = true;
-        macArrayNumber = 0;
-        numSavedAddresses = 0;
-
-        // removeAllPeers();
-
-        if(addPeer(mac_addr)){
-            // Serial.println("Added AP Address");
-            // Serial.print("Size of setup message: ");
-            // Serial.println(sizeof(setupMessage));
-            // Serial.print("Length of message: ");
-            // Serial.println(len);
-            // Send setup message back to AP
-            esp_err_t result = esp_now_send(mac_addr, (uint8_t*)&setupMessage, len);
-            if (result == ESP_OK) {
-                Serial.println("Setup message sent back to AP");
-            } else {
-                Serial.println("Failed to send setup message back to AP");
-                Serial.println(result);
-            }
-            // if (sendESPNowMessage(mac_addr, (const uint8_t*)&setupMessage, len)) {
-                
-            // } else {
-                
-            // }
-        }
-        else {
-            Serial.println("Failed to add AP Address");
-        }
-    } else if (scanMode && len == scanTransmissionSize) { //check for scan message
-        uint32_t receivedCode;
-        uint8_t receivedAP_Address[6];
-        memcpy(&receivedCode, data, 4);
-        memcpy(receivedAP_Address, data + 4, 6);
-
-        if (receivedCode == setupMessageFirst32Bits && memcmp(receivedAP_Address, AP_Address, 6) == 0) { //check if 1st part of handshake
-
-            scanTransmission responseMessage;
-            responseMessage.code = setupMessageSecond32Bits;
-            memcpy(responseMessage.routerAddress, &AP_Address, 6);
-
-            esp_err_t result = esp_now_send(broadcastAddress, (const uint8_t *)&responseMessage, sizeof(responseMessage));
-            if (result == ESP_OK) {
-                Serial.println("Message sent successfully");
-            } else {
-                Serial.print("Error sending message: ");
-                Serial.println(result);
-            }
-            Serial.print("Sent response message: ");
-            Serial.println();
-
-            if (!isDuplicateAddress(mac_addr)) { //check if duplicate using above function
-                if (numSavedAddresses < 15) {
-                    if (addPeer(mac_addr)) {
-                        Serial.println("Peer added successfully");
-                        Serial.print("Peer Mac Address: ");
-                        printMacAddress(mac_addr);
-                        numSavedAddresses++;
-                        memcpy((void *)&macAddresses[macArrayNumber], mac_addr, 6);
-                        macArrayNumber++;
-                        Serial.println("Added to mac address list");
-                    }
-                } else {
-                    Serial.println("Maximum Peers Reached! New peer not added!");
-                }
-            }
-        } else if (receivedCode == setupMessageSecond32Bits && memcmp(receivedAP_Address, AP_Address, 6) == 0) { //check if 2nd part of handshake
-
-            if (!isDuplicateAddress(mac_addr)) { //check if duplicate -> turn this into a function, since it's repeated
-                if (numSavedAddresses < 15) {
-                    if (addPeer(mac_addr)) {
-                        Serial.println("Peer added successfully");
-                        Serial.print("Peer Mac Address: ");
-                        printMacAddress(mac_addr);
-                        numSavedAddresses++;
-                        memcpy((void *)&macAddresses[macArrayNumber], mac_addr, 6);
-                        macArrayNumber++;
-                        Serial.println("Added to mac address list");
-                    }
-                } else {
-                    Serial.println("Maximum Peers Reached! New peer not added!");
-                }
-            }
-        }
-    } 
-    // else if (len>=4){
-    //     uint32_t receivedCode;
-    //     memcpy(&receivedCode, data, 4);
-    //     Serial.print("Received code: ");
-    //     Serial.println(receivedCode);
-    // }
-    else if (len > 64 && len < 251 && !scanMode && esp_now_is_peer_exist(mac_addr)) { //check if data transmission
-        MacAddress incomingAddress;
-        for(int i = 0; i<6; i++){
-        memcpy(&incomingAddress.address[i], data+i, 1);}
-        uint32_t receivedTag;
-        memcpy(&receivedTag, data + 6, 4);
-        uint8_t receivedBatchTag;
-        memcpy(&receivedBatchTag, data + 10, 1);
-        Serial.printf("Mesh transmission received, tag: %u\n", receivedTag);
-
-        if (!isDuplicateMessage(receivedTag, receivedBatchTag)) {
-            if (messageTagBookmark >= MESSAGE_TAGS_TO_STORE) {
-                messageTagBookmark = 0;
-            }
-            messageTags[messageTagBookmark] = receivedTag;
-            // sendMessageToPeers(data, len);
-            esp_now_send(0, data, len);
-            // sendESPNowMessage(AP_Address, (const uint8_t *)&len, len);
-            esp_now_send(AP_Address, data, len);
-        } else {
-            Serial.println("Duplicate message, discarding.");
-        }
-    }
-    // delay(50);
-}
-
-bool oneOn = false; 
 
 void gatherSensorData() {
     uint8_t gyroStatus;
@@ -561,148 +451,30 @@ void gatherSensorData() {
             tempGyroData[i] = tempGyroData[i] * (PI / 180.0);
         }
     
-        int32_t tempGyroDataAbsSquashed = (sqrt(tempGyroData[1]*tempGyroData[1]+tempGyroData[2]*tempGyroData[2]+tempGyroData[3]*tempGyroData[3]))/100; //Squashes the gyro data into a form more convenient for uint8_t conversion
-    
-
-        // Serial.println("Gyro values: ");
-        // Downcast and store the gyroscope data as uint8_t
-            gyroDataFull[sensorDataBookmark] = static_cast<uint8_t>(tempGyroDataAbsSquashed);
-            // Note: static_cast<uint8_t>(tempGyroData[i] & 0xFF) only stores the least significant byte of each int32_t value -> Make it into something better irl
-            // Serial.print(dataStore.gyroData[sensorDataBookmark][i]);
-            // Serial.print(", ");
+        int32_t tempGyroDataAbs = (sqrt(tempGyroData[1]*tempGyroData[1]+tempGyroData[2]*tempGyroData[2]+tempGyroData[3]*tempGyroData[3]));
         }
-    
+    gyroDataFull[gyroDataBookmark];
+    gyroDataBookmark = (gyroDataBookmark) % sizeof(accelDataFull)-1;
     // Serial.println();
     sensors_event_t event;
     accel.getEvent(&event);
-    float aX = event.acceleration.x/9.81;
+    float aX = event.acceleration.x;
     if(aX!=prevAccelX){
         // Serial.print("New accelerometer data:  ");
-        float aY = event.acceleration.y/9.81;
-        float aZ = event.acceleration.z/9.81;
-        accelDataFull[sensorDataBookmark] = (uint8_t)sqrt(aX*aX+aY*aY+aZ*aZ);
+        float aY = event.acceleration.y;
+        float aZ = event.acceleration.z;
+        accelDataFull[accelsDataBookmark] = sqrt(aX*aX+aY*aY+aZ*aZ);
         // Serial.println(accelDataFull[sensorDataBookmark]);
+        accelsDataBookmark = (accelsDataBookmark) % sizeof(accelDataFull)-1;
     }
 
-
-    // Serial.println("Acceleration Values: ");
-    // for (int i = 0; i < 3; i++) {
-    //         Serial.print(dataStore.accelData[sensorDataBookmark][i]);
-    //         Serial.print(", ");
-    //     }
-    sensorDataBookmark = (sensorDataBookmark+1) % sizeof(dataStore.accelData);
     // Serial.println();
 }
+
+
 unsigned long timeOfLastTransmission = 0;
-void sendSensorData(){
-    // if(millis()-timeOfLastTransmission>1000){
-        timeOfLastTransmission=millis();
-    Serial.println("Started sending function");
-    size_t bytesToCopy = sizeof(dataStore.accelData);  // 117 bytes
-    dataStore.messageTag = esp_random();
-    
-    applyChebyshevFilter(gyroDataFull, gyroDataSquashed);
-    unsigned long timeOfLastBatch = 0;
-    for (int i = 0; i < numberOfTransmissions; i++) {
-        // while(millis()-timeOfLastBatch<500){}
-        // timeOfLastBatch=millis();
-        // Serial.println("looping");
-        // Serial.println("Entered first for loop");
-        dataStore.macAddress = myMacAddress;
-        dataStore.batchTag = i;
-
-        // memcpy(dataStore.accelData, accelDataFull + i * bytesToCopy, bytesToCopy);
-        // memcpy(dataStore.gyroData, gyroDataFull + i * bytesToCopy, bytesToCopy);
-
-        // Serial.println("Entered 2nd For loop");
-        if(i*(USABLE_TRANSMISSION_SPACE/2)<=sizeof(accelDataFull)){
-            // Serial.println("Where we're meant to be");
-            memcpy((void*)&dataStore.accelData, (void*)&accelDataFull[i * (USABLE_TRANSMISSION_SPACE/2)], (USABLE_TRANSMISSION_SPACE/2));
-            memcpy((void*)&dataStore.gyroData, (void*)&gyroDataSquashed[(i * (USABLE_TRANSMISSION_SPACE/2))+(USABLE_TRANSMISSION_SPACE/2)], (USABLE_TRANSMISSION_SPACE/2));
-        }
-        else{
-            // Serial.println("Not where we're meant to be");
-            size_t copySpace = sizeof(accelDataFull)-((i-1)*USABLE_TRANSMISSION_SPACE);
-            memcpy((void*)&dataStore.accelData, (void*)&accelDataFull[i * (USABLE_TRANSMISSION_SPACE/2)], copySpace/2);
-            memcpy((void*)&dataStore.gyroData, (void*)&gyroDataSquashed[(i * (USABLE_TRANSMISSION_SPACE/2))+(copySpace/2)], copySpace/2);
-        }
-        // Serial.println("Attempting to send");
-        esp_now_send(0, (const uint8_t *)&dataStore, USABLE_TRANSMISSION_SPACE);
-        // uint8_t weirdArray[sizeof(dataStore)] = {0};
-        // memcpy(weirdArray, (const uint8_t *)&dataStore+11, sizeof(dataStore));
-        // Serial.print("Data we sent:  ");
-        // for(int i=0; i<USABLE_TRANSMISSION_SPACE; i++){
-        //     Serial.print(weirdArray[i]);
-        //     Serial.print(", ");
-        // }
-        // Serial.println();
-
-    }
-
-    Serial.println("Exited Loop");
-    memset(accelDataFull, 0, ACCEL_DATA_SIZE);
-    memset(gyroDataFull, 0, GYRO_DATA_SIZE);
-        if(oneOn){
-        digitalWrite(LED_PIN1, LOW);
-        oneOn = false;
-        }
-        else{digitalWrite(LED_PIN1, HIGH);
-        oneOn = true;
-        }
-    Serial.println("Finished with function");
-    // }
-    
-}
 
 
-bool isDuplicateMessage(uint32_t messageTag, uint8_t batchTag) {
-    for (int i = 0; i < MESSAGE_TAGS_TO_STORE; i++) {
-        if (messageTag == messageTags[i]) {
-            if (isDuplicateBatch(messageTag, batchTag, i)) {
-                return true;
-            } else {
-                // If batch number is not found, add it
-                batchTags[i][batchTagsBookmark[i]] = batchTag;
-                batchTagsBookmark[i] = (batchTagsBookmark[i] + 1) % NO_OF_BATCH_TAGS; // Wrap around correctly
-                return false;
-            }
-        }
-    }
-    // If message number is not found, add it
-    messageTags[messageTagBookmark] = messageTag;
-    batchTags[messageTagBookmark][0] = batchTag; // Initialize the first batchTag for the new messageTag
-    batchTagsBookmark[messageTagBookmark] = 1;   // Initialize the batchTagsBookmark for the new messageTag
-    messageTagBookmark = (messageTagBookmark + 1) % MESSAGE_TAGS_TO_STORE;
-
-    return false;
-}
-
-bool isDuplicateBatch(uint32_t messageTag, uint8_t batchTag, int messageTagNum) {
-    for (int i = 0; i < NO_OF_BATCH_TAGS; i++) {
-        if (batchTag == batchTags[messageTagNum][i]) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool isDuplicateAddress(const uint8_t* mac_addr) {
-    for (const auto& addr : macAddresses) {
-        if (memcmp(addr.address, mac_addr, 6) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool addPeer(const uint8_t* mac_addr) {
-    esp_now_del_peer(mac_addr);
-    esp_now_peer_info_t peerInfo = {};
-    memcpy(peerInfo.peer_addr, mac_addr, 6);
-    peerInfo.channel = WIFI_CHANNEL;
-    peerInfo.encrypt = false;
-    return esp_now_add_peer(&peerInfo) == ESP_OK;
-}
 
 void printMacAddress(const uint8_t* mac_addr) {
     for (int i = 0; i < 6; i++) {
@@ -715,4 +487,87 @@ void printMacAddress(const uint8_t* mac_addr) {
         }
     }
     Serial.println();
+}
+
+
+void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventType type, void * arg, uint8_t *data, size_t len) {
+    if (type == WS_EVT_CONNECT) {
+        if (clients.size() >= MAX_WS_CLIENTS) {
+            client->close();}
+            else {
+            clients.push_back({client, millis()});}
+
+        Serial.println("WebSocket client connected");
+    } else if (type == WS_EVT_DISCONNECT) {
+        Serial.println("WebSocket client disconnected");
+        clients.erase(std::remove_if(clients.begin(), clients.end(),
+                                     [client](const std::pair<AsyncWebSocketClient *, unsigned long> &p) {
+                                         return p.first == client;
+                                     }),
+                      clients.end());
+    } else if (type == WS_EVT_DATA) {
+    Serial.println("WebSocket data received");
+    String msg = (char*)data;
+    Serial.print("Message: ");
+    Serial.println(msg);
+    
+    
+    if (msg.indexOf("getData") != -1) {  // Check if "getData" is contained within msg
+        Serial.println("Got request for data");
+        if(millis()-lastTimeTime>5000){
+            lastTimeTime=millis();
+            // if(breakLoops){breakLoops = false; break;}
+
+                // if(breakLoops){breakLoops = false; break;}
+                    Serial.println("We're checking to send data");
+                    // if(checkForSpikes()){
+                        Serial.println("We're going to send data");
+
+                        String sendingString = "";
+                        Serial.println("Initialised sendingString");
+                        for(int i=0; i<sizeof(MacAddress); i++){
+                            sendingString+=String(myMacAddress.address[i]);
+                            sendingString+=",";
+                        }
+                        Serial.println("Saved mac address");
+                        for(int i=0; i<ACCEL_DATA_SIZE; i++){
+                            sendingString+=String(accelDataFull[i]);
+                            // sendingString+=",";
+                            // Serial.print("Saved ");
+                            // Serial.print(i);
+                            // Serial.println("th accel");
+                        }    
+                        Serial.println("Saved accels");
+                        downsample(gyroDataFull, gyroDataSquashed);
+                        for(int i=0; i<ACCEL_DATA_SIZE; i++){
+                            sendingString+=String(gyroDataSquashed[i]);
+                            sendingString+=",";
+                        }
+                        Serial.println("Saved Gyros");
+                
+
+                        // uint32_t checksum = CRC32.crc32((uint8_t*)&messageData[addressIndex][messageIndex], dataSize);
+                        // memcpy(responseBuffer + dataSize, &checksum, sizeof(checksum));
+                        // Serial.print("Data to send:  ");
+                        // Serial.println(sendingString);
+                        client->text(sendingString);
+                        sendingString = "";
+                        Serial.println("Sent data");
+                    // }
+                }
+            }
+    }
+}
+
+
+void checkClientTimeout() {
+    unsigned long currentMillis = millis();
+    for (auto it = clients.begin(); it != clients.end();) {
+        if (currentMillis - it->second >= CLIENT_TIMEOUT) {
+            it->first->close();
+            it = clients.erase(it); // Remove and disconnect the client
+        } else {
+            ++it;
+        }
+    }
 }
