@@ -17,7 +17,9 @@ bool initialised = false;
 #define DATA_SIZE 6400
 #define TRANSMISSION_SIZE 250 //Maximum bytes transmissable by ESP_Now in a single batch
 #define USABLE_TRANSMISSION_SPACE 234 //Allocate 4 bytes for message identifier, 1 for batch identifier, 6 for mac address
-#define TRANSMISSION_THRESHOLD 10
+#define TRANSMISSION_THRESHOLD 5
+#define MAX_WS_CLIENTS 4
+#define CLIENT_TIMEOUT 5
 
 int divideAndRoundUp(int numerator, int denominator) {
     if (denominator == 0) {
@@ -50,13 +52,15 @@ IPAddress subnet(255, 255, 255, 0);
 
 typedef struct {
      uint8_t address[6];
+     bool sent;
 } MacAddress;
+
 
  MacAddress macAddresses[MAC_ADDRESSES_TO_STORE] = {0};
 alignas(4) uint8_t macAddressBookmark = 0;
 
 size_t totalSize = (DATA_SIZE*MESSAGES_TO_STORE*MAC_ADDRESSES_TO_STORE)+(MAC_ADDRESSES_TO_STORE*8);
-uint8_t responseBuffer[DATA_SIZE+sizeof(MacAddress)+sizeof(bool)+sizeof(uint32_t)];
+uint8_t responseBuffer[DATA_SIZE+sizeof(MacAddress)+sizeof(bool)/*+sizeof(uint32_t)*/+1000];
 
 typedef struct {
     MacAddress address;
@@ -75,6 +79,8 @@ uint32_t messageTags[MAC_ADDRESSES_TO_STORE][MESSAGES_TO_STORE] = {0};
 uint8_t batchTags[MAC_ADDRESSES_TO_STORE][MESSAGES_TO_STORE][NO_OF_BATCH_TAGS] = {0};
  uint8_t currentPersonalBatchTag = 0;
  MacAddress myMacAddress;
+
+ std::vector<std::pair<AsyncWebSocketClient *, unsigned long>> clients;
 
 unsigned long lastDataSend = 0;
 
@@ -175,6 +181,8 @@ void setup() {
 
 void loop() {
     handleSerialInput();
+    // Serial.print("Free Memory: ");
+    // Serial.println(esp_get_free_heap_size());
 //     if (WiFi.softAPgetStationNum() == 0) {
 //     WiFi.softAPdisconnect(true);
 //     WiFi.softAP(ssid, password);
@@ -283,7 +291,10 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
                 Serial.println("Isn't a duplicate address");
                 if(addPeer(mac_addr)){
                     Serial.println("Added Address");
-                    memcpy(&macAddresses[macAddressBookmark], mac_addr, sizeof(macAddresses[0]));
+                    memcpy(&macAddresses[macAddressBookmark], mac_addr, 6);
+                    for(int i=0; i<MESSAGES_TO_STORE; i++){
+                        memcpy((void*)&messageData[macAddressBookmark][i].address, mac_addr, 6);
+                    }
                     macAddressBookmark++;
                 }
                 else {
@@ -295,7 +306,7 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
         else{Serial.println("Out of storage, cannot add new peer");}
     }
 
-    else if(len > 5 && len < 251 && !scanMode && initialised){
+    else if(len > 50 && len < 251 && !scanMode && initialised){
         count++;
         Serial.print("Count:  ");
         Serial.println(count);
@@ -309,7 +320,7 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
         // Serial.print("Received Batch Tag: ");
         // Serial.println(receivedBatchTag);
         // Serial.printf("Mesh transmission received, tag: %u\n", receivedTag);
-        size_t receivedDataLength = len-11;
+        size_t receivedDataLength = len-16;
         uint8_t receivedData[receivedDataLength] = {0};
 
         memcpy(receivedData, incomingData+16, (receivedDataLength));
@@ -335,20 +346,20 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
                 else{
                     Serial.println("Couldn't find batch tag");
                     Serial.print("Batch Tag:  "); Serial.println(receivedBatchTag);
-                    if(receivedBatchTag<=NO_OF_BATCH_TAGS){
+                    if(receivedBatchTag<NO_OF_BATCH_TAGS){
                         Serial.print("Inner Count:  ");
                         innerCount++;
                         Serial.println(innerCount);
-                        Serial.print("ReceivedData:  ");
-                        for(int i=0; i<receivedDataLength; i++){
-                            Serial.print(receivedData[i]);
-                            Serial.print(", ");
-                        }
+                        // Serial.print("ReceivedData:  ");
+                        // for(int i=0; i<receivedDataLength; i++){
+                        //     Serial.print(receivedData[i]);
+                        //     Serial.print(", ");
+                        // }
                         Serial.println();
-                        if(receivedBatchTag*BATCH_SIZE+receivedDataLength-2<=sizeof(messageData[addressIndex][messageTagIndex])){
+                        if(receivedBatchTag*BATCH_SIZE+receivedDataLength<=sizeof(messageData[addressIndex][messageTagIndex])){
                         memcpy((void*)&(messageData[addressIndex][messageTagIndex].data[receivedBatchTag*BATCH_SIZE]), receivedData, receivedDataLength);
                         batchTagsBookmark[addressIndex][messageTagIndex]++;
-                        if(batchTagsBookmark[addressIndex][messageTagIndex]>=NO_OF_BATCH_TAGS){
+                        if(batchTagsBookmark[addressIndex][messageTagIndex]>=NO_OF_BATCH_TAGS-1){
                             batchTagsBookmark[addressIndex][messageTagIndex]=0;
                             messageData[addressIndex][messageTagIndex].notSent = true;
                         }
@@ -406,6 +417,11 @@ void onDataRecv(const uint8_t* mac_addr, const uint8_t* incomingData, int len) {
 
 void handleRestart() {
     Serial.println("Restarting");
+    server.end();
+    ws.closeAll();
+    ws._cleanBuffers();
+    initWebSocket();
+    server.begin();
     macAddressBookmark = 0;
     memset((void*)macAddresses, 0, sizeof(macAddresses));
     memset((void*)messageData, 0, sizeof(messageData));
@@ -455,20 +471,40 @@ void handleScan() {
 bool messagesToSend[MAC_ADDRESSES_TO_STORE][MESSAGES_TO_STORE] = {0};
 
 bool checkForSpikes(int addressIndex, int messageIndex){
-    for(int i = 0; i<DATA_SIZE; i++){
+    Serial.println("Checking for spikes");
+    if(addressIndex<macAddressBookmark && messageIndex<MESSAGES_TO_STORE){
+        Serial.println("if'd correctly");
+    for(int j=0; j<DATA_SIZE/2; j+=117){
+    for(int i = 0; i<DATA_SIZE/2; i++){
         if(messageData[addressIndex][messageIndex].data[i]>=TRANSMISSION_THRESHOLD){
             return true;
         }
+    }}
     }
     return false;
 }
 
 
+uint8_t sendAddressBuffer[10] = {0};
+bool breakLoops = false;
+MacAddress emptyAddress = {0};
+unsigned long lastTimeTime = 0;
+
 void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventType type, void * arg, uint8_t *data, size_t len) {
     if (type == WS_EVT_CONNECT) {
+        if (clients.size() >= MAX_WS_CLIENTS) {
+            client->close();}
+            else {
+            clients.push_back({client, millis()});}
+
         Serial.println("WebSocket client connected");
     } else if (type == WS_EVT_DISCONNECT) {
         Serial.println("WebSocket client disconnected");
+        clients.erase(std::remove_if(clients.begin(), clients.end(),
+                                     [client](const std::pair<AsyncWebSocketClient *, unsigned long> &p) {
+                                         return p.first == client;
+                                     }),
+                      clients.end());
     } else if (type == WS_EVT_DATA) {
     Serial.println("WebSocket data received");
     String msg = (char*)data;
@@ -482,22 +518,56 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
         handleScan();
     } else if (msg.indexOf("getData") != -1) {  // Check if "getData" is contained within msg
         Serial.println("Got request for data");
-        for(int addressIndex=0; addressIndex<MAC_ADDRESSES_TO_STORE; addressIndex++){
+        if(lastTimeTime-millis()>500){
+            lastTimeTime=millis();
+        for(int addressIndex=0; addressIndex<macAddressBookmark; addressIndex++){
+            Serial.println("Looping through addresses");
+            // if(breakLoops){breakLoops = false; break;}
             for(int messageIndex=0; messageIndex<MESSAGES_TO_STORE; messageIndex++){
+                // if(breakLoops){breakLoops = false; break;}
                 if(messageData[addressIndex][messageIndex].notSent==true){
+                    Serial.println("We're checking to send data");
                     if(checkForSpikes(addressIndex, messageIndex)){
-                        size_t dataSize = DATA_SIZE + sizeof(MacAddress) + sizeof(bool);
+                        Serial.println("We're going to send data");
+                        size_t dataSize = DATA_SIZE + sizeof(MacAddress) + sizeof(bool)-2;
                         memcpy(responseBuffer, (void*)&messageData[addressIndex][messageIndex], dataSize);
-                        uint32_t checksum = CRC32.crc32((uint8_t*)&messageData[addressIndex][messageIndex], dataSize);
-                        memcpy(responseBuffer + dataSize, &checksum, sizeof(checksum));
-                        client->binary(responseBuffer, dataSize+sizeof(checksum));
+                        // uint32_t checksum = CRC32.crc32((uint8_t*)&messageData[addressIndex][messageIndex], dataSize);
+                        // memcpy(responseBuffer + dataSize, &checksum, sizeof(checksum));
+                        Serial.print("Data to send:  ");
+                        bool isAccel = true;
+                        for(int j=0; j<sizeof(responseBuffer)-117; j+=117){
+                            if(isAccel){
+                                Serial.print("Acceleration:  ");
+                                isAccel = false;
+                            }
+                            else{Serial.print("Rotational Velocity:  "); isAccel = true;}
+                            for(int i=0; i<117; i++){
+                                Serial.print(responseBuffer[i+j]);
+                                Serial.print(", ");
+                        }
+                        }
+                        
+                        client->binary(responseBuffer, dataSize/*+sizeof(checksum)*/);
+                        memset(responseBuffer, 0, sizeof(responseBuffer));
+                        Serial.print("Sent data");
+                        breakLoops = true;
                         break;
                     }
                     memset((void*)&messageData[addressIndex][messageIndex], 0, sizeof(messageData));
                 }
             }
+        if(!macAddresses[addressIndex].sent && memcmp(macAddresses[addressIndex].address, &emptyAddress, 6) == 0){
+            macAddresses[addressIndex].sent = true;
+            Serial.println("Sent Mac Address");
+            memcpy(sendAddressBuffer, macAddresses[addressIndex].address, 6);
+            uint32_t checksum = CRC32.crc32((uint8_t*)&macAddresses[addressIndex].address, 6);
+            memcpy(sendAddressBuffer+6, &checksum, 4);
+            client->binary(sendAddressBuffer, sizeof(sendAddressBuffer));
+            memset(sendAddressBuffer, 0, sizeof(sendAddressBuffer));
+            break;
         }
-        
+    }
+        }
 
         // Serial.print("responseBuffer: ");
         // for (int i = 0; i < 2500; i++) {
@@ -513,6 +583,19 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
 //     server.on("/", HTTP_GET, onRequest);
 //     server.begin();
 // }
+
+
+void checkClientTimeout() {
+    unsigned long currentMillis = millis();
+    for (auto it = clients.begin(); it != clients.end();) {
+        if (currentMillis - it->second >= CLIENT_TIMEOUT) {
+            it->first->close();
+            it = clients.erase(it); // Remove and disconnect the client
+        } else {
+            ++it;
+        }
+    }
+}
 
 void initWebSocket() {
     ws.onEvent(onWsEvent);
