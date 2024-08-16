@@ -82,6 +82,9 @@ unsigned long scanEndTime = 0;
 uint32_t setupMessageFirst32Bits;
 uint32_t setupMessageSecond32Bits;
 
+AsyncWebSocket ws("/ws");
+AsyncWebSocketClient * wsClient = nullptr;
+
 typedef struct {
      uint8_t address[6];
 } MacAddress;
@@ -103,7 +106,6 @@ typedef struct {
 //  uint8_t responseBuffer[DATA_SIZE+sizeof(MacAddress)+sizeof(bool)/*+sizeof(uint32_t)*/+1000];
 
 AsyncWebServer server(80);
-AsyncWebSocket ws("/ws");
  std::vector<std::pair<AsyncWebSocketClient *, unsigned long>> clients;
 
 
@@ -297,7 +299,7 @@ void setup() {
     WiFi.setSleep(false);
     // Default clock is 100kHz. LSM6DSOX also supports 400kHz, let's use it
     Wire.setClock(100000);
-
+    
     // Init the sensor
     lsm6dsoxSensor.begin();
 
@@ -370,6 +372,13 @@ void loop() {
     unsigned long currentMillis = millis(); //Used often, so defining is good
     gatherSensorData();
 
+
+    if (millis() - lastTimeTime > 31) {
+    lastTimeTime = millis();
+    if (wsClient && wsClient->canSend()) {
+        sendSensorData();
+    }
+}
     if (!scanMode && setupReceived) { //Switch to generate random data and add to buffer
         gatherSensorData();
         esp_now_del_peer(broadcastAddress);
@@ -514,8 +523,7 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
     
     if (msg.indexOf("getData") != -1) {  // Check if "getData" is contained within msg
         Serial.println("Got request for data");
-        if(millis()-lastTimeTime>5000){
-            lastTimeTime=millis();
+        
             // if(breakLoops){breakLoops = false; break;}
 
                 // if(breakLoops){breakLoops = false; break;}
@@ -554,20 +562,53 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
                         sendingString = "";
                         Serial.println("Sent data");
                     // }
-                }
+                
             }
     }
 }
 
+void sendSensorData() {
+    if (wsClient && wsClient->canSend()) {
+       Serial.println("Got request for data");
+        // if(millis()-lastTimeTime>5000){
+        //     lastTimeTime=millis();
+            // if(breakLoops){breakLoops = false; break;}
 
-void checkClientTimeout() {
-    unsigned long currentMillis = millis();
-    for (auto it = clients.begin(); it != clients.end();) {
-        if (currentMillis - it->second >= CLIENT_TIMEOUT) {
-            it->first->close();
-            it = clients.erase(it); // Remove and disconnect the client
-        } else {
-            ++it;
-        }
+                // if(breakLoops){breakLoops = false; break;}
+                    Serial.println("We're checking to send data");
+                    // if(checkForSpikes()){
+                        Serial.println("We're going to send data");
+
+                        String sendingString = "";
+                        Serial.println("Initialised sendingString");
+                        for(int i=0; i<sizeof(MacAddress); i++){
+                            sendingString+=String(myMacAddress.address[i]);
+                            sendingString+=",";
+                        }
+                        Serial.println("Saved mac address");
+                        for(int i=0; i<ACCEL_DATA_SIZE; i++){
+                            sendingString+=String(accelDataFull[i]);
+                            // sendingString+=",";
+                            // Serial.print("Saved ");
+                            // Serial.print(i);
+                            // Serial.println("th accel");
+                        }    
+                        Serial.println("Saved accels");
+                        downsample(gyroDataFull, gyroDataSquashed);
+                        for(int i=0; i<ACCEL_DATA_SIZE; i++){
+                            sendingString+=String(gyroDataSquashed[i]);
+                            sendingString+=",";
+                        }
+                        Serial.println("Saved Gyros");
+                
+
+                        // uint32_t checksum = CRC32.crc32((uint8_t*)&messageData[addressIndex][messageIndex], dataSize);
+                        // memcpy(responseBuffer + dataSize, &checksum, sizeof(checksum));
+                        // Serial.print("Data to send:  ");
+                        // Serial.println(sendingString);
+                        wsClient->text(sendingString);
+                        sendingString = "";
+                        Serial.println("Sent data");
+        // }
     }
 }
